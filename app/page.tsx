@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import Image from "next/image";
 import { 
-  Search, MapPin, Crosshair, 
+  Search, MapPin, Crosshair, Phone, Mail, 
   Wrench, Stethoscope, Coffee, Car, 
-  GraduationCap, Building2, MonitorSmartphone, Scissors
+  GraduationCap, Building2, MonitorSmartphone, Scissors, Loader2
 } from "lucide-react";
 
 declare global {
@@ -19,11 +19,29 @@ declare global {
   }
 }
 
+interface Negocio {
+  id: number;
+  nombre: string;
+  actividad?: string;
+  calle?: string;
+  numero?: string;
+  colonia?: string;
+  municipio?: string;
+  estado?: string;
+  telefono?: string;
+  correo?: string;
+}
+
 export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
   const [estado, setEstado] = useState("");
   const [municipio, setMunicipio] = useState("");
   const [isTelegram, setIsTelegram] = useState(false);
+
+  // Estados de búsqueda
+  const [results, setResults] = useState<Negocio[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
 
   useEffect(() => {
     if (typeof window !== "undefined" && window.Telegram?.WebApp) {
@@ -38,9 +56,31 @@ export default function Home() {
     alert("Pronto conectaremos el GPS mágico aquí 📍");
   };
 
-  const handleSearch = (e: React.FormEvent) => {
+  const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    alert(`Buscando: ${searchQuery} en ${municipio}, ${estado}`);
+    setLoading(true);
+    setHasSearched(true);
+
+    try {
+      const params = new URLSearchParams();
+      if (searchQuery) params.append("q", searchQuery);
+      if (estado) params.append("estado", estado);
+      if (municipio) params.append("municipio", municipio);
+
+      const res = await fetch(`/api/search?${params.toString()}`);
+      const data = await res.json();
+
+      if (data.success && Array.isArray(data.data)) {
+        setResults(data.data);
+      } else {
+        setResults([]);
+      }
+    } catch (err) {
+      console.error("Error al buscar:", err);
+      setResults([]);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const categorias = [
@@ -125,8 +165,8 @@ export default function Home() {
                   >
                     <option value="">Estado</option>
                     <option value="Jalisco">Jalisco</option>
-                    <option value="CDMX">CDMX</option>
-                    <option value="Nuevo Leon">Nuevo León</option>
+                    <option value="Ciudad de México">CDMX</option>
+                    <option value="Nuevo León">Nuevo León</option>
                   </select>
                   <div className="w-px bg-gray-300 my-1"></div>
                   <select 
@@ -137,6 +177,7 @@ export default function Home() {
                     <option value="">Municipio</option>
                     <option value="Zapopan">Zapopan</option>
                     <option value="Guadalajara">Guadalajara</option>
+                    <option value="Monterrey">Monterrey</option>
                   </select>
                 </div>
                 
@@ -154,15 +195,73 @@ export default function Home() {
               {/* Botón Buscar */}
               <button 
                 type="submit" 
-                className="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-8 py-3 rounded-xl shadow-lg shadow-blue-600/30 transition-all flex justify-center items-center gap-2 md:w-auto w-full cursor-pointer"
+                disabled={loading}
+                className="bg-blue-600 hover:bg-blue-700 disabled:opacity-70 text-white font-semibold px-8 py-3 rounded-xl shadow-lg shadow-blue-600/30 transition-all flex justify-center items-center gap-2 md:w-auto w-full cursor-pointer"
               >
-                Buscar
+                {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Buscar"}
               </button>
             </form>
           </div>
         </section>
 
-        {/* 3. CATEGORÍAS RÁPIDAS */}
+        {/* 3. SECCIÓN DE RESULTADOS */}
+        {hasSearched && (
+          <section className="py-12 px-4 max-w-5xl mx-auto">
+            <h2 className="text-xl font-bold text-gray-900 mb-6">
+              Resultados de búsqueda ({results.length})
+            </h2>
+
+            {loading ? (
+              <div className="flex justify-center items-center py-16 text-gray-400">
+                <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+              </div>
+            ) : results.length === 0 ? (
+              <div className="text-center py-12 bg-white rounded-2xl border border-gray-100 p-8">
+                <p className="text-gray-500 text-lg">No se encontraron negocios con esos criterios.</p>
+                <p className="text-sm text-gray-400 mt-1">Prueba con otra palabra clave o quita los filtros de ubicación.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {results.map((item) => (
+                  <div 
+                    key={item.id} 
+                    className="p-5 bg-white rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow flex flex-col justify-between"
+                  >
+                    <div>
+                      <h3 className="font-semibold text-lg text-gray-900 leading-snug">{item.nombre}</h3>
+                      {item.actividad && (
+                        <span className="inline-block mt-1 text-xs font-medium px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700">
+                          {item.actividad}
+                        </span>
+                      )}
+                      <p className="text-sm text-gray-500 mt-3 flex items-start gap-1.5">
+                        <MapPin className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" />
+                        <span>
+                          {[item.calle, item.numero, item.colonia, item.municipio, item.estado].filter(Boolean).join(", ")}
+                        </span>
+                      </p>
+                    </div>
+
+                    <div className="mt-4 pt-3 border-t border-gray-50 flex items-center gap-4 text-xs text-gray-600">
+                      {item.telefono && (
+                        <a href={`tel:${item.telefono}`} className="flex items-center gap-1 hover:text-blue-600">
+                          <Phone className="w-3.5 h-3.5 text-blue-600" /> {item.telefono}
+                        </a>
+                      )}
+                      {item.correo && (
+                        <a href={`mailto:${item.correo}`} className="flex items-center gap-1 hover:text-blue-600">
+                          <Mail className="w-3.5 h-3.5 text-blue-600" /> {item.correo}
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* 4. CATEGORÍAS RÁPIDAS */}
         <section className="py-20 px-4 max-w-5xl mx-auto">
           <h2 className="text-2xl font-bold text-gray-900 mb-8 text-center">Explora las categorías más buscadas</h2>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -170,6 +269,10 @@ export default function Home() {
               <button 
                 key={idx}
                 type="button"
+                onClick={() => {
+                  setSearchQuery(cat.nombre);
+                  window.scrollTo({ top: 200, behavior: "smooth" });
+                }}
                 className="flex flex-col items-center justify-center p-6 bg-white rounded-2xl border border-gray-100 shadow-sm hover:shadow-md hover:border-blue-100 transition-all group cursor-pointer"
               >
                 <div className="w-12 h-12 bg-blue-50 rounded-full flex items-center justify-center mb-3 group-hover:bg-blue-100 transition-colors">
@@ -182,7 +285,7 @@ export default function Home() {
         </section>
       </main>
 
-      {/* 4. FOOTER */}
+      {/* 5. FOOTER */}
       <footer className="bg-white border-t border-gray-200 py-10 mt-auto">
         <div className="max-w-7xl mx-auto px-4 flex flex-col md:flex-row items-center justify-between gap-4">
           <div className="text-sm text-gray-500 flex flex-col md:flex-row items-center gap-2">
