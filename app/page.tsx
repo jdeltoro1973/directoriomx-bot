@@ -186,7 +186,7 @@ export default function Home() {
       <footer className="bg-white border-t border-gray-200 py-10 mt-auto">
         <div className="max-w-7xl mx-auto px-4 flex flex-col md:flex-row items-center justify-between gap-4">
           <div className="text-sm text-gray-500 flex flex-col md:flex-row items-center gap-2">
-            <span>© {new Date().getFullYear()} directorio.cc. Todos los derechos reservados.</span>
+            <span>© 2026 directorio.cc. Todos los derechos reservados.</span>
             {isTelegram && (
               <span className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full font-medium">
                 Telegram Mini App
