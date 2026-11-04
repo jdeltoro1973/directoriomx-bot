@@ -1,5 +1,37 @@
 import { NextRequest, NextResponse } from "next/server";
 import { turso } from "@/lib/turso";
+import path from "path";
+import fs from "fs";
+
+interface RedCorporativa {
+  id: string;
+  u: number; // total_unidades
+  m: number; // total_matrices
+  s: number; // total_sucursales
+  n: string; // nombre_comun
+  r: string; // razon_social_comun
+}
+
+// Cargar el catálogo en memoria una sola vez al inicializar el proceso
+let redesCache: RedCorporativa[] | null = null;
+
+function getRedes(): RedCorporativa[] {
+  if (!redesCache) {
+    try {
+      const filePath = path.join(process.cwd(), "data", "redes_corporativas.json");
+      if (fs.existsSync(filePath)) {
+        const raw = fs.readFileSync(filePath, "utf8");
+        redesCache = JSON.parse(raw);
+      } else {
+        redesCache = [];
+      }
+    } catch (e) {
+      console.error("Error al cargar redes_corporativas.json:", e);
+      redesCache = [];
+    }
+  }
+  return redesCache || [];
+}
 
 const CATEGORIAS_KEYWORDS: Record<string, string[]> = {
   C01: ["abarrotes", "miscelanea", "tiendita", "viveres", "tienda"],
@@ -67,6 +99,33 @@ function evaluarSimilitud(entrada: string, objetivo: string): number {
   return Math.max(scoreDirecto, scoreColapsado);
 }
 
+// Búsqueda en catálogo de marcas corporativas (21k+ cadenas)
+function resolverMarca(query: string): { marca: RedCorporativa; score: number } | null {
+  const qNorm = normalizar(query);
+  const redes = getRedes();
+
+  let mejor: { marca: RedCorporativa; score: number } | null = null;
+  let maxScore = 0;
+
+  for (const item of redes) {
+    const nNorm = normalizar(item.n);
+
+    // Coincidencia exacta o frase contenida
+    if (qNorm === nNorm || (nNorm.length >= 4 && qNorm.includes(nNorm))) {
+      return { marca: item, score: 1.0 };
+    }
+
+    const score = evaluarSimilitud(qNorm, nNorm);
+    if (score > 0.65 && score > maxScore) {
+      maxScore = score;
+      mejor = { marca: item, score };
+    }
+  }
+
+  return mejor;
+}
+
+// Búsqueda en categorías genéricas
 function resolverCategoria(texto: string): { catId: string; palabra: string; score: number } | null {
   const q = normalizar(texto);
   let mejor: { catId: string; palabra: string; score: number } | null = null;
@@ -92,39 +151,45 @@ export async function GET(request: NextRequest) {
     const municipio = (searchParams.get("municipio") || "").trim();
     const limit = 20;
 
+    let marcaDetectada: RedCorporativa | null = null;
     let categoriaDetectada: string | null = null;
     let terminoFiltroNombre = "";
 
     if (rawQ) {
-      // 1. Probar coincidencia difusa directa sobre la frase completa
-      const matchTotal = resolverCategoria(rawQ);
-
-      if (matchTotal) {
-        categoriaDetectada = matchTotal.catId;
+      // 1. Prioridad: ¿Es una marca corporativa de la red? (ej: "Ferretería Calzada", "Starbucks")
+      const matchMarca = resolverMarca(rawQ);
+      if (matchMarca && matchMarca.score >= 0.7) {
+        marcaDetectada = matchMarca.marca;
+        terminoFiltroNombre = matchMarca.marca.n;
       } else {
-        // 2. Probar coincidencia por palabras ("Mueblería La Estrella")
-        const palabras = rawQ.split(/\s+/);
-        let palabraCatEncontrada = "";
+        // 2. ¿Es una categoría genérica? (ej: "ferretería", "farmacia", "dentista")
+        const matchCat = resolverCategoria(rawQ);
+        if (matchCat) {
+          categoriaDetectada = matchCat.catId;
+        } else {
+          // 3. Evaluar búsqueda compuesta o nombre independiente
+          const palabras = rawQ.split(/\s+/);
+          let palabraCat = "";
 
-        for (const token of palabras) {
-          if (token.length >= 4) {
-            const matchToken = resolverCategoria(token);
-            if (matchToken && matchToken.score >= 0.6) {
-              categoriaDetectada = matchToken.catId;
-              palabraCatEncontrada = token;
-              break;
+          for (const token of palabras) {
+            if (token.length >= 4) {
+              const tokenCat = resolverCategoria(token);
+              if (tokenCat && tokenCat.score >= 0.6) {
+                categoriaDetectada = tokenCat.catId;
+                palabraCat = token;
+                break;
+              }
             }
           }
-        }
 
-        if (palabraCatEncontrada) {
-          terminoFiltroNombre = palabras
-            .filter((p) => p.toLowerCase() !== palabraCatEncontrada.toLowerCase())
-            .join(" ")
-            .trim();
-        } else {
-          // No es categoría: buscar el texto tal cual en el nombre del negocio
-          terminoFiltroNombre = rawQ;
+          if (palabraCat) {
+            terminoFiltroNombre = palabras
+              .filter((p) => p.toLowerCase() !== palabraCat.toLowerCase())
+              .join(" ")
+              .trim();
+          } else {
+            terminoFiltroNombre = rawQ;
+          }
         }
       }
     }
@@ -182,6 +247,17 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
+      tipoResolucion: marcaDetectada ? "marca_corporativa" : categoriaDetectada ? "categoria" : "nombre_directo",
+      marca: marcaDetectada
+        ? {
+            idCorporativo: marcaDetectada.id,
+            nombre: marcaDetectada.n,
+            razonSocial: marcaDetectada.r,
+            totalUnidades: marcaDetectada.u,
+            totalSucursales: marcaDetectada.s,
+            totalMatrices: marcaDetectada.m,
+          }
+        : null,
       categoriaId: categoriaDetectada,
       data: rs.rows,
     });
