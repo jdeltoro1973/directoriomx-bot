@@ -11,35 +11,50 @@ export async function GET(request: NextRequest) {
     const limit = 20;
     const offset = (page - 1) * limit;
 
-    // Construcción dinámica de condiciones
     const whereConditions: string[] = [];
     const args: (string | number)[] = [];
 
+    // Búsqueda por nombre de negocio o nombre de categoría
     if (q) {
-      whereConditions.push("(nombre LIKE ? OR actividad LIKE ?)");
+      whereConditions.push("(dp.nombre LIKE ? OR dc.nombre LIKE ?)");
       args.push(`%${q}%`, `%${q}%`);
     }
 
+    // Filtros geográficos
     if (estado) {
-      whereConditions.push("estado LIKE ?");
-      args.push(`%${estado}%`);
+      whereConditions.push("(dp.estado LIKE ? OR dp.slug_estado LIKE ?)");
+      args.push(`%${estado}%`, `%${estado.toLowerCase()}%`);
     }
 
     if (municipio) {
-      whereConditions.push("municipio LIKE ?");
-      args.push(`%${municipio}%`);
+      whereConditions.push("(dp.municipio LIKE ? OR dp.slug_municipio LIKE ?)");
+      args.push(`%${municipio}%`, `%${municipio.toLowerCase()}%`);
     }
 
     const whereClause = whereConditions.length > 0 
       ? `WHERE ${whereConditions.join(" AND ")}` 
       : "";
 
-    // Consulta de registros paginados
     const sql = `
-      SELECT id, nombre, actividad, calle, numero, colonia, municipio, estado, telefono, correo
-      FROM negocios
+      SELECT 
+        dp.id,
+        dp.nombre,
+        dp.tipo_vial,
+        dp.calle,
+        dp.num_ext,
+        dp.colonia,
+        dp.cp,
+        dp.municipio,
+        dp.estado,
+        dp.lat,
+        dp.lon,
+        dp.telefono,
+        dp.email,
+        dp.web,
+        dc.nombre AS categoria
+      FROM directorio_prod dp
+      LEFT JOIN directorio_categorias dc ON dp.categoria_id = dc.id
       ${whereClause}
-      ORDER BY id ASC
       LIMIT ? OFFSET ?
     `;
     args.push(limit, offset);
