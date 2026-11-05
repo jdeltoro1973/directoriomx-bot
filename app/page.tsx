@@ -1,11 +1,12 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import { BrandBadge, MarcaCorporativa } from "@/components/BrandBadge";
+import React, { useEffect, useState, useRef } from "react";
 import Image from "next/image";
 import { 
   Search, MapPin, Crosshair, Phone, Mail, 
   Wrench, Stethoscope, Coffee, Car, 
-  GraduationCap, Building2, MonitorSmartphone, Scissors, Loader2
+  GraduationCap, Building2, MonitorSmartphone, Scissors, Loader2, Store
 } from "lucide-react";
 
 declare global {
@@ -41,10 +42,17 @@ export default function Home() {
   const [municipio, setMunicipio] = useState("");
   const [isTelegram, setIsTelegram] = useState(false);
 
-  // Estados de búsqueda
+  // Estados del Buscador
   const [results, setResults] = useState<Negocio[]>([]);
+  const [marcaResult, setMarcaResult] = useState<MarcaCorporativa | null>(null);
+  const [tipoResolucion, setTipoResolucion] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
+
+  // Estados del Autocompletado
+  const [suggestions, setSuggestions] = useState<{nombre: string, unidades: number}[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const searchWrapperRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (typeof window !== "undefined" && window.Telegram?.WebApp) {
@@ -55,35 +63,86 @@ export default function Home() {
     }
   }, []);
 
+  // Clic fuera del buscador cierra las sugerencias
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (searchWrapperRef.current && !searchWrapperRef.current.contains(event.target as Node)) {
+        setShowSuggestions(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // Debounce para pedir sugerencias mientras teclea
+  useEffect(() => {
+    if (searchQuery.length < 2) {
+      setSuggestions([]);
+      return;
+    }
+    const delayFn = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/suggest?q=${encodeURIComponent(searchQuery)}`);
+        const data = await res.json();
+        if (data.success && data.data.length > 0) {
+          setSuggestions(data.data);
+          setShowSuggestions(true);
+        } else {
+          setSuggestions([]);
+        }
+      } catch (e) {
+        setSuggestions([]);
+      }
+    }, 250); // 250ms de espera
+
+    return () => clearTimeout(delayFn);
+  }, [searchQuery]);
+
   const handleGeolocation = () => {
     alert("Pronto conectaremos el GPS mágico aquí 📍");
   };
 
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const ejecutarBusqueda = async (query: string, est: string, mun: string) => {
     setLoading(true);
     setHasSearched(true);
+    setShowSuggestions(false);
 
     try {
       const params = new URLSearchParams();
-      if (searchQuery) params.append("q", searchQuery);
-      if (estado) params.append("estado", estado);
-      if (municipio) params.append("municipio", municipio);
+      if (query) params.append("q", query);
+      if (est) params.append("estado", est);
+      if (mun) params.append("municipio", mun);
 
       const res = await fetch(`/api/search?${params.toString()}`);
       const data = await res.json();
 
       if (data.success && Array.isArray(data.data)) {
         setResults(data.data);
+        setMarcaResult(data.marca || null);
+        setTipoResolucion(data.tipoResolucion || "");
       } else {
         setResults([]);
+        setMarcaResult(null);
+        setTipoResolucion("");
       }
     } catch (err) {
       console.error("Error al buscar:", err);
       setResults([]);
+      setMarcaResult(null);
+      setTipoResolucion("");
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleSearchSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    ejecutarBusqueda(searchQuery, estado, municipio);
+  };
+
+  const handleSelectSuggestion = (nombreMarca: string) => {
+    setSearchQuery(nombreMarca);
+    ejecutarBusqueda(nombreMarca, estado, municipio);
   };
 
   const categorias = [
@@ -100,7 +159,7 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col font-sans">
       
-      {/* 1. NAVBAR MINIMALISTA */}
+      {/* 1. NAVBAR */}
       <nav className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-gray-100">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -141,20 +200,51 @@ export default function Home() {
         </section>
 
         {/* Tarjeta de Búsqueda Flotante */}
-        <section className="px-4 -mt-20 relative z-20 max-w-5xl mx-auto">
+        <section className="px-4 -mt-20 relative z-30 max-w-5xl mx-auto">
           <div className="bg-white rounded-2xl shadow-2xl p-4 md:p-6 w-full">
-            <form onSubmit={handleSearch} className="flex flex-col md:flex-row gap-3">
+            <form onSubmit={handleSearchSubmit} className="flex flex-col md:flex-row gap-3 relative">
               
-              {/* Campo: ¿Qué buscas? */}
-              <div className="flex-1 flex items-center px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus-within:ring-2 focus-within:ring-blue-500/20 focus-within:border-blue-500 transition-all">
-                <Search className="text-gray-400 w-5 h-5 mr-3 flex-shrink-0" />
-                <input 
-                  type="text" 
-                  placeholder="¿Qué estás buscando? (Ej. Ferretería)" 
-                  className="w-full bg-transparent focus:outline-none text-gray-800 placeholder-gray-500"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                />
+              {/* Contenedor del Input principal y el Autocompletado */}
+              <div ref={searchWrapperRef} className="flex-1 relative">
+                <div className="flex items-center px-4 py-3 h-full bg-gray-50 border border-gray-200 rounded-xl focus-within:ring-2 focus-within:ring-blue-500/20 focus-within:border-blue-500 transition-all">
+                  <Search className="text-gray-400 w-5 h-5 mr-3 flex-shrink-0" />
+                  <input 
+                    type="text" 
+                    placeholder="¿Qué estás buscando? (Ej. Ferretería)" 
+                    className="w-full bg-transparent focus:outline-none text-gray-800 placeholder-gray-500"
+                    value={searchQuery}
+                    onChange={(e) => {
+                      setSearchQuery(e.target.value);
+                      setShowSuggestions(true);
+                    }}
+                    onFocus={() => {
+                      if (suggestions.length > 0) setShowSuggestions(true);
+                    }}
+                  />
+                </div>
+                
+                {/* Desplegable de Sugerencias */}
+                {showSuggestions && suggestions.length > 0 && (
+                  <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-xl border border-gray-100 overflow-hidden z-50">
+                    <ul className="py-2">
+                      {suggestions.map((sug, idx) => (
+                        <li 
+                          key={idx}
+                          onClick={() => handleSelectSuggestion(sug.nombre)}
+                          className="px-4 py-2.5 hover:bg-blue-50 cursor-pointer flex items-center justify-between group transition-colors"
+                        >
+                          <div className="flex items-center gap-3">
+                            <Store className="w-4 h-4 text-gray-400 group-hover:text-blue-600" />
+                            <span className="text-sm font-medium text-gray-800 group-hover:text-blue-700">{sug.nombre}</span>
+                          </div>
+                          <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full group-hover:bg-blue-100 group-hover:text-blue-600">
+                            {sug.unidades} sucursales
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
 
               {/* Campo: Ubicación */}
@@ -184,7 +274,6 @@ export default function Home() {
                   </select>
                 </div>
                 
-                {/* Botón Geolocalización */}
                 <button 
                   type="button"
                   onClick={handleGeolocation}
@@ -199,7 +288,7 @@ export default function Home() {
               <button 
                 type="submit" 
                 disabled={loading}
-                className="bg-blue-600 hover:bg-blue-700 disabled:opacity-70 text-white font-semibold px-8 py-3 rounded-xl shadow-lg shadow-blue-600/30 transition-all flex justify-center items-center gap-2 md:w-auto w-full cursor-pointer"
+                className="bg-blue-600 hover:bg-blue-700 disabled:opacity-70 text-white font-semibold px-8 py-3 rounded-xl shadow-lg shadow-blue-600/30 transition-all flex justify-center items-center gap-2 md:w-auto w-full cursor-pointer h-full"
               >
                 {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Buscar"}
               </button>
@@ -224,54 +313,60 @@ export default function Home() {
                 <p className="text-sm text-gray-400 mt-1">Prueba con otra palabra clave o quita los filtros de ubicación.</p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {results.map((item) => (
-                <div 
-				  key={item.id} 
-				  className="p-5 bg-white rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow flex flex-col justify-between"
-				>
-				  <div>
-					<h3 className="font-semibold text-lg text-gray-900 leading-snug">{item.nombre}</h3>
-					{item.categoria && (
-					  <span className="inline-block mt-1 text-xs font-medium px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700">
-						{item.categoria}
-					  </span>
-					)}
-					<p className="text-sm text-gray-500 mt-3 flex items-start gap-1.5">
-					  <MapPin className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" />
-					  <span>
-						{[item.tipo_vial, item.calle, item.num_ext, item.colonia, item.municipio, item.estado]
-						  .filter(Boolean)
-						  .join(" ")}
-					  </span>
-					</p>
-				  </div>
+              <>
+                {tipoResolucion === "marca_corporativa" && marcaResult && (
+                  <BrandBadge marca={marcaResult} />
+                )}
 
-				  <div className="mt-4 pt-3 border-t border-gray-50 flex flex-wrap items-center gap-4 text-xs text-gray-600">
-					{item.telefono && (
-					  <a href={`tel:${item.telefono}`} className="flex items-center gap-1 hover:text-blue-600 font-medium">
-						<Phone className="w-3.5 h-3.5 text-blue-600" /> {item.telefono}
-					  </a>
-					)}
-					{item.email && (
-					  <a href={`mailto:${item.email}`} className="flex items-center gap-1 hover:text-blue-600 font-medium">
-						<Mail className="w-3.5 h-3.5 text-blue-600" /> {item.email}
-					  </a>
-					)}
-					{item.web && (
-					  <a 
-						href={item.web.startsWith("http") ? item.web : `https://${item.web}`} 
-						target="_blank" 
-						rel="noopener noreferrer" 
-						className="text-blue-600 hover:underline font-medium"
-					  >
-						Sitio web
-					  </a>
-					)}
-				  </div>
-				</div>
-                ))}
-              </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {results.map((item) => (
+                  <div 
+                    key={item.id} 
+                    className="p-5 bg-white rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow flex flex-col justify-between"
+                  >
+                    <div>
+                      <h3 className="font-semibold text-lg text-gray-900 leading-snug">{item.nombre}</h3>
+                      {item.categoria && (
+                        <span className="inline-block mt-1 text-xs font-medium px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700">
+                          {item.categoria}
+                        </span>
+                      )}
+                      <p className="text-sm text-gray-500 mt-3 flex items-start gap-1.5">
+                        <MapPin className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" />
+                        <span>
+                          {[item.tipo_vial, item.calle, item.num_ext, item.colonia, item.municipio, item.estado]
+                            .filter(Boolean)
+                            .join(" ")}
+                        </span>
+                      </p>
+                    </div>
+
+                    <div className="mt-4 pt-3 border-t border-gray-50 flex flex-wrap items-center gap-4 text-xs text-gray-600">
+                      {item.telefono && (
+                        <a href={`tel:${item.telefono}`} className="flex items-center gap-1 hover:text-blue-600 font-medium">
+                          <Phone className="w-3.5 h-3.5 text-blue-600" /> {item.telefono}
+                        </a>
+                      )}
+                      {item.email && (
+                        <a href={`mailto:${item.email}`} className="flex items-center gap-1 hover:text-blue-600 font-medium">
+                          <Mail className="w-3.5 h-3.5 text-blue-600" /> {item.email}
+                        </a>
+                      )}
+                      {item.web && (
+                        <a 
+                          href={item.web.startsWith("http") ? item.web : `https://${item.web}`} 
+                          target="_blank" 
+                          rel="noopener noreferrer" 
+                          className="text-blue-600 hover:underline font-medium"
+                        >
+                          Sitio web
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                  ))}
+                </div>
+              </>
             )}
           </section>
         )}

@@ -12,7 +12,6 @@ interface RedCorporativa {
   r: string; // razon_social_comun
 }
 
-// Cargar el catálogo en memoria una sola vez al inicializar el proceso
 let redesCache: RedCorporativa[] | null = null;
 
 function getRedes(): RedCorporativa[] {
@@ -20,17 +19,15 @@ function getRedes(): RedCorporativa[] {
     try {
       const filePath = path.join(process.cwd(), "data", "redes_corporativas.json");
       if (fs.existsSync(filePath)) {
-        const raw = fs.readFileSync(filePath, "utf8");
-        redesCache = JSON.parse(raw);
+        redesCache = JSON.parse(fs.readFileSync(filePath, "utf8"));
       } else {
         redesCache = [];
       }
-    } catch (e) {
-      console.error("Error al cargar redes_corporativas.json:", e);
+    } catch {
       redesCache = [];
     }
   }
-  return redesCache || [];
+  return redesCache ?? [];
 }
 
 const CATEGORIAS_KEYWORDS: Record<string, string[]> = {
@@ -95,40 +92,45 @@ function evaluarSimilitud(entrada: string, objetivo: string): number {
   const scoreDirecto = diceBiGrams(entrada, objetivo);
   const entradaColapsada = entrada.replace(/(.)\1+/g, "$1");
   const objColapsado = objetivo.replace(/(.)\1+/g, "$1");
-  const scoreColapsado = diceBiGrams(entradaColapsada, objColapsado);
-  return Math.max(scoreDirecto, scoreColapsado);
+  return Math.max(scoreDirecto, diceBiGrams(entradaColapsada, objColapsado));
 }
 
-// Búsqueda en catálogo de marcas corporativas (21k+ cadenas)
+// Resuelve marcas corporativas comparando similitud real sin falsos positivos de subcadena
 function resolverMarca(query: string): { marca: RedCorporativa; score: number } | null {
   const qNorm = normalizar(query);
   const redes = getRedes();
 
   let mejor: { marca: RedCorporativa; score: number } | null = null;
-  let maxScore = 0;
+  let maxPuntajeEfectivo = 0;
 
   for (const item of redes) {
     const nNorm = normalizar(item.n);
 
-    // Coincidencia exacta o frase contenida
-    if (qNorm === nNorm || (nNorm.length >= 4 && qNorm.includes(nNorm))) {
-      return { marca: item, score: 1.0 };
+    let rawScore = 0;
+    if (qNorm === nNorm) {
+      rawScore = 1.0;
+    } else {
+      rawScore = evaluarSimilitud(qNorm, nNorm);
     }
 
-    const score = evaluarSimilitud(qNorm, nNorm);
-    if (score > 0.65 && score > maxScore) {
-      maxScore = score;
-      mejor = { marca: item, score };
+    if (rawScore < 0.65) continue;
+
+    // Pequeño bono proporcional al número de unidades para desempatar a favor de marcas de gran presencia
+    const boostUnidades = Math.min(0.06, Math.log10(Math.max(item.u, 1)) * 0.015);
+    const puntajeEfectivo = rawScore + boostUnidades;
+
+    if (puntajeEfectivo > maxPuntajeEfectivo) {
+      maxPuntajeEfectivo = puntajeEfectivo;
+      mejor = { marca: item, score: rawScore };
     }
   }
 
   return mejor;
 }
 
-// Búsqueda en categorías genéricas
-function resolverCategoria(texto: string): { catId: string; palabra: string; score: number } | null {
+function resolverCategoria(texto: string): { catId: string; score: number } | null {
   const q = normalizar(texto);
-  let mejor: { catId: string; palabra: string; score: number } | null = null;
+  let mejor: { catId: string; score: number } | null = null;
   let maxScore = 0;
 
   for (const [catId, palabras] of Object.entries(CATEGORIAS_KEYWORDS)) {
@@ -136,7 +138,7 @@ function resolverCategoria(texto: string): { catId: string; palabra: string; sco
       const score = evaluarSimilitud(q, palabra);
       if (score > 0.55 && score > maxScore) {
         maxScore = score;
-        mejor = { catId, palabra, score };
+        mejor = { catId, score };
       }
     }
   }
@@ -156,35 +158,35 @@ export async function GET(request: NextRequest) {
     let terminoFiltroNombre = "";
 
     if (rawQ) {
-      // 1. Prioridad: ¿Es una marca corporativa de la red? (ej: "Ferretería Calzada", "Starbucks")
+      // 1. Evaluar si es una cadena corporativa conocida
       const matchMarca = resolverMarca(rawQ);
       if (matchMarca && matchMarca.score >= 0.7) {
         marcaDetectada = matchMarca.marca;
         terminoFiltroNombre = matchMarca.marca.n;
       } else {
-        // 2. ¿Es una categoría genérica? (ej: "ferretería", "farmacia", "dentista")
+        // 2. Evaluar si coincide con una categoría genérica completa
         const matchCat = resolverCategoria(rawQ);
         if (matchCat) {
           categoriaDetectada = matchCat.catId;
         } else {
-          // 3. Evaluar búsqueda compuesta o nombre independiente
+          // 3. Evaluar búsqueda compuesta (ej: "tacos el guero")
           const palabras = rawQ.split(/\s+/);
-          let palabraCat = "";
+          let tokenCatEncontrado = "";
 
           for (const token of palabras) {
             if (token.length >= 4) {
-              const tokenCat = resolverCategoria(token);
-              if (tokenCat && tokenCat.score >= 0.6) {
-                categoriaDetectada = tokenCat.catId;
-                palabraCat = token;
+              const testCat = resolverCategoria(token);
+              if (testCat && testCat.score >= 0.6) {
+                categoriaDetectada = testCat.catId;
+                tokenCatEncontrado = token;
                 break;
               }
             }
           }
 
-          if (palabraCat) {
+          if (tokenCatEncontrado) {
             terminoFiltroNombre = palabras
-              .filter((p) => p.toLowerCase() !== palabraCat.toLowerCase())
+              .filter((p) => p.toLowerCase() !== tokenCatEncontrado.toLowerCase())
               .join(" ")
               .trim();
           } else {
@@ -245,9 +247,17 @@ export async function GET(request: NextRequest) {
 
     const rs = await turso.execute({ sql, args });
 
+    const tipoResolucion = marcaDetectada
+      ? "marca_corporativa"
+      : categoriaDetectada && terminoFiltroNombre
+      ? "categoria_y_nombre"
+      : categoriaDetectada
+      ? "categoria"
+      : "nombre_directo";
+
     return NextResponse.json({
       success: true,
-      tipoResolucion: marcaDetectada ? "marca_corporativa" : categoriaDetectada ? "categoria" : "nombre_directo",
+      tipoResolucion,
       marca: marcaDetectada
         ? {
             idCorporativo: marcaDetectada.id,
