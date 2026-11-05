@@ -145,6 +145,12 @@ function resolverCategoria(texto: string): { catId: string; score: number } | nu
 // --- ENDPOINT PRINCIPAL ---
 export async function GET(request: NextRequest) {
   try {
+    // DIAGNÓSTICO: Registrar inicio
+    console.log("=== INICIO DE BÚSQUEDA ===");
+    console.log(`DB_NAME configurado: ${process.env.DB_NAME}`);
+    console.log(`DB_HOST configurado: ${process.env.DB_HOST}`);
+    const startTime = performance.now();
+
     const { searchParams } = new URL(request.url);
     const rawQ = (searchParams.get("q") || "").trim();
     const estado = (searchParams.get("estado") || "").trim();
@@ -247,6 +253,12 @@ export async function GET(request: NextRequest) {
       : categoriaDetectada
       ? "categoria"
       : "nombre_directo";
+
+    // DIAGNÓSTICO: Registrar fin
+    const endTime = performance.now();
+    console.log(`Tiempo total ejecución: ${(endTime - startTime).toFixed(2)} ms`);
+    console.log(`Filas devueltas: ${rows.length}`);
+    console.log("=== FIN DE BÚSQUEDA ===\n");
 
     return NextResponse.json({
       success: true,
