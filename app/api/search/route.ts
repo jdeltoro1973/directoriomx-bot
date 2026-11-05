@@ -1,15 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
-import { turso } from "@/lib/turso";
+import postgres from "postgres";
 import path from "path";
 import fs from "fs";
 
+// 1. Configuración de la conexión a PostgreSQL
+const sql = postgres({
+  host: process.env.DB_HOST,
+  port: Number(process.env.DB_PORT || 5432),
+  database: process.env.DB_NAME,
+  username: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  idle_timeout: 20,
+  max_lifetime: 60 * 30,
+});
+
+// --- LÓGICA EN MEMORIA (Marcas y Categorías) ---
 interface RedCorporativa {
   id: string;
-  u: number; // total_unidades
-  m: number; // total_matrices
-  s: number; // total_sucursales
-  n: string; // nombre_comun
-  r: string; // razon_social_comun
+  u: number;
+  m: number;
+  s: number;
+  n: string;
+  r: string;
 }
 
 let redesCache: RedCorporativa[] | null = null;
@@ -36,7 +48,7 @@ const CATEGORIAS_KEYWORDS: Record<string, string[]> = {
   C03: ["supermercado", "mayorista", "bodega", "walmart", "soriana", "chedraui", "costco", "sams"],
   C04: ["taqueria", "tacos", "antojitos", "quesadillas", "tortas", "tamales", "gorditas", "birria"],
   C05: ["comida rapida", "hamburguesas", "pizzas", "pizza", "hot dogs", "sushi", "alitas"],
-  C06: ["restaurante", "mariscos", "comedor", "cocina economica", "fondita", "buffet"],
+  C06: ["restaurante", "mariscos", "comedor", "cocina economica", "fondita", "buffet", "japones", "chino"],
   C07: ["cafeteria", "cafe", "pasteleria", "pasteles", "postres", "reposteria", "heladeria", "helados", "neveria"],
   C08: ["panaderia", "pan", "tortilleria", "tortillas", "molino"],
   C09: ["carniceria", "carne", "polleria", "pollo", "pescaderia", "verduleria", "fruteria", "frutas", "verduras"],
@@ -57,11 +69,7 @@ const CATEGORIAS_KEYWORDS: Record<string, string[]> = {
 };
 
 function normalizar(txt: string): string {
-  return txt
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .trim();
+  return txt.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
 }
 
 function diceBiGrams(a: string, b: string): number {
@@ -83,7 +91,6 @@ function diceBiGrams(a: string, b: string): number {
       bg.set(pair, count - 1);
     }
   }
-
   return (2.0 * intersection) / (a.length - 1 + (b.length - 1));
 }
 
@@ -95,7 +102,6 @@ function evaluarSimilitud(entrada: string, objetivo: string): number {
   return Math.max(scoreDirecto, diceBiGrams(entradaColapsada, objColapsado));
 }
 
-// Resuelve marcas corporativas comparando similitud real sin falsos positivos de subcadena
 function resolverMarca(query: string): { marca: RedCorporativa; score: number } | null {
   const qNorm = normalizar(query);
   const redes = getRedes();
@@ -105,17 +111,9 @@ function resolverMarca(query: string): { marca: RedCorporativa; score: number } 
 
   for (const item of redes) {
     const nNorm = normalizar(item.n);
-
-    let rawScore = 0;
-    if (qNorm === nNorm) {
-      rawScore = 1.0;
-    } else {
-      rawScore = evaluarSimilitud(qNorm, nNorm);
-    }
-
+    let rawScore = (qNorm === nNorm) ? 1.0 : evaluarSimilitud(qNorm, nNorm);
     if (rawScore < 0.65) continue;
 
-    // Pequeño bono proporcional al número de unidades para desempatar a favor de marcas de gran presencia
     const boostUnidades = Math.min(0.06, Math.log10(Math.max(item.u, 1)) * 0.015);
     const puntajeEfectivo = rawScore + boostUnidades;
 
@@ -124,7 +122,6 @@ function resolverMarca(query: string): { marca: RedCorporativa; score: number } 
       mejor = { marca: item, score: rawScore };
     }
   }
-
   return mejor;
 }
 
@@ -145,6 +142,7 @@ function resolverCategoria(texto: string): { catId: string; score: number } | nu
   return mejor;
 }
 
+// --- ENDPOINT PRINCIPAL ---
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -158,35 +156,34 @@ export async function GET(request: NextRequest) {
     let terminoFiltroNombre = "";
 
     if (rawQ) {
-      // 1. Evaluar si es una cadena corporativa conocida
       const matchMarca = resolverMarca(rawQ);
       if (matchMarca && matchMarca.score >= 0.7) {
         marcaDetectada = matchMarca.marca;
         terminoFiltroNombre = matchMarca.marca.n;
       } else {
-        // 2. Evaluar si coincide con una categoría genérica completa
         const matchCat = resolverCategoria(rawQ);
         if (matchCat) {
           categoriaDetectada = matchCat.catId;
         } else {
-          // 3. Evaluar búsqueda compuesta (ej: "tacos el guero")
+          // Búsqueda compuesta (ej. "restaurante japones")
           const palabras = rawQ.split(/\s+/);
-          let tokenCatEncontrado = "";
+          let mejorCatMatch: { catId: string, token: string, score: number } | null = null;
 
           for (const token of palabras) {
             if (token.length >= 4) {
               const testCat = resolverCategoria(token);
               if (testCat && testCat.score >= 0.6) {
-                categoriaDetectada = testCat.catId;
-                tokenCatEncontrado = token;
-                break;
+                if (!mejorCatMatch || testCat.score > mejorCatMatch.score) {
+                  mejorCatMatch = { catId: testCat.catId, token, score: testCat.score };
+                }
               }
             }
           }
 
-          if (tokenCatEncontrado) {
+          if (mejorCatMatch) {
+            categoriaDetectada = mejorCatMatch.catId;
             terminoFiltroNombre = palabras
-              .filter((p) => p.toLowerCase() !== tokenCatEncontrado.toLowerCase())
+              .filter((p) => p.toLowerCase() !== mejorCatMatch!.token.toLowerCase())
               .join(" ")
               .trim();
           } else {
@@ -196,56 +193,52 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    // --- CONSTRUCCIÓN DE CONSULTA DINÁMICA PARA POSTGRESQL ---
     const whereConditions: string[] = [];
     const args: (string | number)[] = [];
+    let paramIndex = 1; // Contador dinámico para $1, $2, $3...
 
     if (categoriaDetectada) {
-      whereConditions.push("dp.categoria_id = ?");
+      whereConditions.push(`dp.categoria_id = $${paramIndex++}`);
       args.push(categoriaDetectada);
     }
 
     if (terminoFiltroNombre.length >= 2) {
-      whereConditions.push("dp.nombre LIKE ?");
-      args.push(`%${terminoFiltroNombre}%`);
+      if (categoriaDetectada || estado) {
+        whereConditions.push(`dp.nombre ILIKE $${paramIndex++}`);
+        args.push(`%${terminoFiltroNombre}%`);
+      } else {
+        whereConditions.push(`dp.nombre ILIKE $${paramIndex++}`);
+        args.push(`${terminoFiltroNombre}%`);
+      }
     }
 
     if (estado) {
-      whereConditions.push("(dp.estado LIKE ? OR dp.slug_estado LIKE ?)");
-      args.push(`%${estado}%`, `%${estado.toLowerCase()}%`);
+      whereConditions.push(`dp.estado ILIKE $${paramIndex++}`);
+      args.push(estado);
     }
 
     if (municipio) {
-      whereConditions.push("(dp.municipio LIKE ? OR dp.slug_municipio LIKE ?)");
-      args.push(`%${municipio}%`, `%${municipio.toLowerCase()}%`);
+      whereConditions.push(`dp.municipio ILIKE $${paramIndex++}`);
+      args.push(municipio);
     }
 
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(" AND ")}` : "";
 
-    const sql = `
+    const sqlQuery = `
       SELECT 
-        dp.id,
-        dp.nombre,
-        dp.tipo_vial,
-        dp.calle,
-        dp.num_ext,
-        dp.colonia,
-        dp.cp,
-        dp.municipio,
-        dp.estado,
-        dp.lat,
-        dp.lon,
-        dp.telefono,
-        dp.email,
-        dp.web,
-        dc.nombre AS categoria
+        dp.id, dp.nombre, dp.tipo_vial, dp.calle, dp.num_ext, 
+        dp.colonia, dp.cp, dp.municipio, dp.estado, dp.lat, dp.lon, 
+        dp.telefono, dp.email, dp.web, dc.nombre AS categoria
       FROM directorio_prod dp
       LEFT JOIN directorio_categorias dc ON dp.categoria_id = dc.id
       ${whereClause}
-      LIMIT ?;
+      LIMIT $${paramIndex};
     `;
-    args.push(limit);
+    args.push(limit); // El límite siempre es el último parámetro
 
-    const rs = await turso.execute({ sql, args });
+    // Ejecutamos en Postgres
+    const rows = await sql.unsafe(sqlQuery, args);
 
     const tipoResolucion = marcaDetectada
       ? "marca_corporativa"
@@ -269,7 +262,7 @@ export async function GET(request: NextRequest) {
           }
         : null,
       categoriaId: categoriaDetectada,
-      data: rs.rows,
+      data: rows,
     });
   } catch (error: any) {
     console.error("Error en /api/search:", error);
