@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 
+export const dynamic = 'force-dynamic';
+
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 
 async function sendTelegramMessage(chatId: number, text: string) {
@@ -46,34 +48,41 @@ export async function POST(req: NextRequest) {
     const queryPattern = `%${terms[0]}%`;
     const secondaryPattern = terms[1] ? `%${terms[1]}%` : queryPattern;
 
-    // Consulta optimizada a Turso
-    const result = await db.execute({
-      sql: `
-        SELECT p.nombre, p.calle, p.num_ext, p.colonia, p.municipio, p.estado, p.telefono, c.nombre as categoria
-        FROM directorio_prod p
-        LEFT JOIN directorio_categorias c ON p.categoria_id = c.id
-        WHERE (p.nombre LIKE ? OR c.nombre LIKE ?)
-          AND (p.municipio LIKE ? OR p.estado LIKE ? OR p.nombre LIKE ?)
-        LIMIT 5
-      `,
-      args: [queryPattern, queryPattern, secondaryPattern, secondaryPattern, secondaryPattern],
-    });
+    // Consulta optimizada con postgres.js apuntando a la tabla del DENUE en el esquema carto
+    // Aprovechando el índice ILIKE de trigramas que creamos
+    const result = await db`
+      SELECT 
+        nom_estab,
+        nombre_act,
+        tipo_vial,
+        nom_vial,
+        numero_ext,
+        nomb_asent,
+        municipio,
+        entidad,
+        telefono
+      FROM carto.denuenacional052025
+      WHERE (nom_estab ILIKE ${queryPattern} OR nombre_act ILIKE ${queryPattern})
+        AND (municipio ILIKE ${secondaryPattern} OR entidad ILIKE ${secondaryPattern} OR nom_estab ILIKE ${secondaryPattern})
+      LIMIT 5
+    `;
 
-    if (result.rows.length === 0) {
+    if (result.length === 0) {
       await sendTelegramMessage(chatId, `No se encontraron resultados para: *${userText}*`);
       return NextResponse.json({ ok: true });
     }
 
     let response = `📍 *Resultados para:* _${userText}_\n\n`;
 
-    for (const row of result.rows) {
+    for (const row of result) {
       const tel = row.telefono ? `\n📞 \`${row.telefono}\`` : "";
-      const col = row.colonia ? `, Col. ${row.colonia}` : "";
-      const calle = row.calle ? `${row.calle} ${row.num_ext || "S/N"}${col}` : "Dirección disponible";
+      const col = row.nomb_asent ? `, Col. ${row.nomb_asent}` : "";
+      const vial = row.tipo_vial ? `${row.tipo_vial} ` : "";
+      const calle = row.nom_vial ? `${vial}${row.nom_vial} ${row.numero_ext || "S/N"}${col}` : "Dirección disponible";
       
-      response += `🏢 *${row.nombre}*\n`;
-      response += `🏷 _${row.categoria || "Giro general"}_\n`;
-      response += `📌 ${calle}, ${row.municipio}, ${row.estado}${tel}\n\n`;
+      response += `🏢 *${row.nom_estab}*\n`;
+      response += `🏷 _${row.nombre_act || "Giro general"}_\n`;
+      response += `📌 ${calle}, ${row.municipio}, ${row.entidad}${tel}\n\n`;
     }
 
     await sendTelegramMessage(chatId, response);
