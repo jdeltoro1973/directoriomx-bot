@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 
-export const dynamic = 'force-dynamic';
-
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 
 async function sendTelegramMessage(chatId: number, text: string) {
@@ -48,8 +46,7 @@ export async function POST(req: NextRequest) {
     const queryPattern = `%${terms[0]}%`;
     const secondaryPattern = terms[1] ? `%${terms[1]}%` : queryPattern;
 
-    // Consulta optimizada con postgres.js apuntando a la tabla del DENUE en el esquema carto
-    // Aprovechando el índice ILIKE de trigramas que creamos
+    // Consulta con postgres.js sobre los 6.13M de registros del DENUE
     const result = await db`
       SELECT 
         nom_estab,
