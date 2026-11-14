@@ -24,6 +24,7 @@ interface Negocio {
   id: string;
   nombre: string;
   categoria?: string;
+  codigo_act?: number;
   tipo_vial?: string;
   calle?: string;
   num_ext?: string;
@@ -48,6 +49,9 @@ export default function Home() {
   const [tipoResolucion, setTipoResolucion] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
+  // Fase 1: antes un error del servidor (ej. la base no responde) se tragaba
+  // en silencio y se mostraba como "0 resultados". Ahora se guarda y se muestra.
+  const [errorBusqueda, setErrorBusqueda] = useState<string | null>(null);
 
   // Estados del Autocompletado
   const [suggestions, setSuggestions] = useState<{nombre: string, unidades: number}[]>([]);
@@ -106,6 +110,7 @@ export default function Home() {
     setLoading(true);
     setHasSearched(true);
     setShowSuggestions(false);
+    setErrorBusqueda(null);
 
     try {
       const params = new URLSearchParams();
@@ -121,15 +126,21 @@ export default function Home() {
         setMarcaResult(data.marca || null);
         setTipoResolucion(data.tipoResolucion || "");
       } else {
+        // Error real del servidor (base de datos, conexión, etc.): mostrarlo,
+        // no fingir que simplemente no hubo resultados.
         setResults([]);
         setMarcaResult(null);
         setTipoResolucion("");
+        setErrorBusqueda(
+          data.error || "La búsqueda falló. Inténtalo de nuevo en un momento."
+        );
       }
     } catch (err) {
       console.error("Error al buscar:", err);
       setResults([]);
       setMarcaResult(null);
       setTipoResolucion("");
+      setErrorBusqueda("No se pudo conectar con el servidor de búsqueda. Revisa tu conexión e inténtalo de nuevo.");
     } finally {
       setLoading(false);
     }
@@ -145,15 +156,19 @@ export default function Home() {
     ejecutarBusqueda(nombreMarca, estado, municipio);
   };
 
+  // Fase 1: cada categoría trae su `query`, la palabra que sí resuelve la
+  // búsqueda en el servidor (antes el botón solo llenaba el cuadro de texto
+  // y no buscaba nada). "Bienes Raíces" y "Tecnología" no tienen categoría
+  // SCIAN directa, así que buscan por nombre; quedan pendientes de afinar.
   const categorias = [
-    { nombre: "Ferreterías", icono: <Wrench className="w-6 h-6 text-blue-600" /> },
-    { nombre: "Salud y Médicos", icono: <Stethoscope className="w-6 h-6 text-blue-600" /> },
-    { nombre: "Restaurantes", icono: <Coffee className="w-6 h-6 text-blue-600" /> },
-    { nombre: "Talleres", icono: <Car className="w-6 h-6 text-blue-600" /> },
-    { nombre: "Educación", icono: <GraduationCap className="w-6 h-6 text-blue-600" /> },
-    { nombre: "Bienes Raíces", icono: <Building2 className="w-6 h-6 text-blue-600" /> },
-    { nombre: "Tecnología", icono: <MonitorSmartphone className="w-6 h-6 text-blue-600" /> },
-    { nombre: "Estéticas", icono: <Scissors className="w-6 h-6 text-blue-600" /> },
+    { nombre: "Ferreterías", query: "ferreteria", icono: <Wrench className="w-6 h-6 text-blue-600" /> },
+    { nombre: "Salud y Médicos", query: "consultorio", icono: <Stethoscope className="w-6 h-6 text-blue-600" /> },
+    { nombre: "Restaurantes", query: "restaurante", icono: <Coffee className="w-6 h-6 text-blue-600" /> },
+    { nombre: "Talleres", query: "taller", icono: <Car className="w-6 h-6 text-blue-600" /> },
+    { nombre: "Educación", query: "escuela", icono: <GraduationCap className="w-6 h-6 text-blue-600" /> },
+    { nombre: "Bienes Raíces", query: "inmobiliaria", icono: <Building2 className="w-6 h-6 text-blue-600" /> },
+    { nombre: "Tecnología", query: "computadoras", icono: <MonitorSmartphone className="w-6 h-6 text-blue-600" /> },
+    { nombre: "Estéticas", query: "estetica", icono: <Scissors className="w-6 h-6 text-blue-600" /> },
   ];
 
   return (
@@ -177,8 +192,8 @@ export default function Home() {
             </span>
           </div>
           <div className="hidden md:flex space-x-8 text-sm font-medium text-gray-600">
-            <a href="#" className="hover:text-blue-600 transition-colors">Categorías</a>
-            <a href="#" className="hover:text-blue-600 transition-colors">Estados</a>
+            <a href="#categorias" className="hover:text-blue-600 transition-colors">Categorías</a>
+            <a href="#buscador" className="hover:text-blue-600 transition-colors">Estados</a>
             <a href="mailto:ventas@directorio.cc" className="hover:text-blue-600 transition-colors">Contacto</a>
           </div>
         </div>
@@ -200,7 +215,7 @@ export default function Home() {
         </section>
 
         {/* Tarjeta de Búsqueda Flotante */}
-        <section className="px-4 -mt-20 relative z-30 max-w-5xl mx-auto">
+        <section id="buscador" className="px-4 -mt-20 relative z-30 max-w-5xl mx-auto">
           <div className="bg-white rounded-2xl shadow-2xl p-4 md:p-6 w-full">
             <form onSubmit={handleSearchSubmit} className="flex flex-col md:flex-row gap-3 relative">
               
@@ -307,6 +322,12 @@ export default function Home() {
               <div className="flex justify-center items-center py-16 text-gray-400">
                 <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
               </div>
+            ) : errorBusqueda ? (
+              <div className="text-center py-12 bg-white rounded-2xl border border-red-200 p-8">
+                <p className="text-red-600 text-lg font-medium">La búsqueda no se pudo completar.</p>
+                <p className="text-sm text-gray-500 mt-2 break-words">{errorBusqueda}</p>
+                <p className="text-sm text-gray-400 mt-1">Si el problema persiste, revisa la conexión a la base de datos en Vercel.</p>
+              </div>
             ) : results.length === 0 ? (
               <div className="text-center py-12 bg-white rounded-2xl border border-gray-100 p-8">
                 <p className="text-gray-500 text-lg">No se encontraron negocios con esos criterios.</p>
@@ -372,15 +393,16 @@ export default function Home() {
         )}
 
         {/* 4. CATEGORÍAS RÁPIDAS */}
-        <section className="py-20 px-4 max-w-5xl mx-auto">
+        <section id="categorias" className="py-20 px-4 max-w-5xl mx-auto">
           <h2 className="text-2xl font-bold text-gray-900 mb-8 text-center">Explora las categorías más buscadas</h2>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             {categorias.map((cat, idx) => (
-              <button 
+              <button
                 key={idx}
                 type="button"
                 onClick={() => {
-                  setSearchQuery(cat.nombre);
+                  setSearchQuery(cat.query);
+                  ejecutarBusqueda(cat.query, estado, municipio);
                   window.scrollTo({ top: 200, behavior: "smooth" });
                 }}
                 className="flex flex-col items-center justify-center p-6 bg-white rounded-2xl border border-gray-100 shadow-sm hover:shadow-md hover:border-blue-100 transition-all group cursor-pointer"

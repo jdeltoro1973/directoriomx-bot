@@ -1,18 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
-import postgres from "postgres";
+import { sql } from "@/lib/db";
 import path from "path";
 import fs from "fs";
 
-// 1. Configuración de la conexión a PostgreSQL
-const sql = postgres({
-  host: process.env.DB_HOST,
-  port: Number(process.env.DB_PORT || 5432),
-  database: process.env.DB_NAME,
-  username: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  idle_timeout: 20,
-  max_lifetime: 60 * 30,
-});
+// FASE 1 (2026-11-14) — Reescritura de la búsqueda para la tabla real:
+//   carto.denuenacional052026  (base "carto", servidor Mapoteca, 6,138,074 filas)
+//
+// Cambios respecto a la versión anterior:
+//  1. Ya NO se consulta directorio_prod / directorio_categorias (esas tablas
+//     viven solo en Nabucodonosor y Juan decidió NO usarlas). Se lee directo
+//     de la tabla DENUE con el mapeo de columnas de abajo.
+//  2. Ya NO se crea un cliente Postgres propio en este archivo: se usa el
+//     cliente ÚNICO de lib/db.ts (antes había dos configuraciones distintas
+//     y arreglar una no arreglaba la otra).
+//  3. categoria_id y categoria_coloquial están en NULL en las 6,138,074 filas
+//     y categorias_codigos también está vacío (verificado 2026-11-14), así
+//     que el filtro de categoría ya NO usa categoria_id: usa codigo_act
+//     (SCIAN, 6 dígitos) mediante la tabla CATEGORIA_CODIGOS_ACT de abajo.
+//  4. Si faltan las variables de conexión, la ruta responde 500 con un
+//     mensaje claro en vez de colgarse hasta el timeout.
 
 // --- LÓGICA EN MEMORIA (Marcas y Categorías) ---
 interface RedCorporativa {
@@ -66,6 +72,50 @@ const CATEGORIAS_KEYWORDS: Record<string, string[]> = {
   C21: ["cadenas comerciales", "franquicias"],
   C22: ["hospital", "clinica", "sanatorio", "urgencias"],
   C23: ["guarderia", "asilo", "asistencia social"],
+};
+
+// Mapeo categoría (C01–C23) -> prefijos de codigo_act (SCIAN, 6 dígitos).
+// La consulta convierte cada prefijo en un rango numérico: "7225" equivale
+// a codigo_act BETWEEN 722500 AND 722599, y "722514" a 722514 AND 722514.
+// Así el filtro usa el índice btree normal sobre codigo_act (entero); un
+// LIKE sobre codigo_act::text no lo usaría y haría escaneo completo.
+// Es una tabla v1, editable en un solo lugar. Base: los 15 codigo_act más
+// frecuentes verificados en carto.denuenacional052026 el 2026-11-14
+// (461110 abarrotes 682,918; 812110 belleza 296,918; 463211 ropa 179,669;
+// 722513 antojitos 168,295; 722514 tacos y tortas 147,589; 465311 papelería
+// 131,637; 311830 tortillas 112,072; 461130 frutas y verduras 102,458;
+// 811111 reparación mecánica 98,052; 722515 cafeterías 94,062;
+// 722517 pizzas/hamburguesas 79,622; 461121 carnes rojas 76,695;
+// 621211 consultorios dentales 76,032; 467111 ferreterías 75,726)
+// más la estructura jerárquica del SCIAN (2 dígitos sector, 3 subsector,
+// 4 rama, 5 subrama, 6 clase). Un prefijo corto abarca toda la familia,
+// ej. "7225" = todos los restaurantes con servicio de preparación.
+// C21 queda vacío a propósito: "cadenas/franquicias" no es una actividad
+// SCIAN, así que esa categoría no filtra por código y solo busca por nombre.
+const CATEGORIA_CODIGOS_ACT: Record<string, string[]> = {
+  C01: ["461110"], // abarrotes, ultramarinos y misceláneas
+  C02: ["462112"], // minisupers
+  C03: ["462111", "462210", "431110"], // supermercados, departamentales, mayoreo de abarrotes
+  C04: ["722513", "722514"], // antojitos; tacos y tortas
+  C05: ["722517", "722519"], // pizzas/hamburguesas/hot dogs para llevar; otros para llevar
+  C06: ["7225"], // TODOS los restaurantes con servicio de preparación de alimentos
+  C07: ["722515"], // cafeterías, fuentes de sodas, neverías, refresquerías
+  C08: ["3118"], // panaderías, tortillerías y molinos (rama 3118)
+  C09: ["461121", "461122", "461123", "461130"], // carnes, aves, pescados/mariscos, frutas y verduras
+  C10: ["8111"], // reparación y mantenimiento de automóviles y camiones
+  C11: ["468211", "468212", "811192"], // refacciones nuevas/usadas; lavado y lubricado
+  C12: ["812110"], // salones y clínicas de belleza y peluquerías
+  C13: ["621"], // consultorios y servicios médicos de consulta externa (incl. dentales 621211)
+  C14: ["463211", "463310", "466111"], // ropa; calzado; muebles para el hogar
+  C15: ["611"], // servicios educativos
+  C16: ["4653"], // papelería, libros, regalos y novedades
+  C17: ["467111"], // ferreterías y tlapalerías
+  C18: ["464111", "464112"], // farmacias sin/con minisúper
+  C19: ["72241"], // bares, cantinas y centros nocturnos
+  C20: ["713940"], // centros de acondicionamiento físico (gimnasios)
+  C21: [], // sin mapeo SCIAN (ver comentario arriba)
+  C22: ["622"], // hospitales
+  C23: ["623", "6244"], // residencias de asistencia social; guarderías
 };
 
 function normalizar(txt: string): string {
@@ -149,6 +199,21 @@ export async function GET(request: NextRequest) {
     console.log("=== INICIO DE BÚSQUEDA ===");
     console.log(`DB_NAME configurado: ${process.env.DB_NAME}`);
     console.log(`DB_HOST configurado: ${process.env.DB_HOST}`);
+
+    // Sin configuración de base de datos no tiene sentido intentar conectar:
+    // antes la petición se colgaba hasta el ETIMEDOUT y el frente lo mostraba
+    // como "0 resultados". Ahora responde 500 con un mensaje claro.
+    if (!process.env.DATABASE_URL && !process.env.DB_HOST) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "Base de datos no configurada en Vercel: faltan DATABASE_URL o DB_HOST/DB_NAME/DB_USER/DB_PASSWORD en las variables de entorno del proyecto.",
+        },
+        { status: 500 }
+      );
+    }
+
     const startTime = performance.now();
 
     const { searchParams } = new URL(request.url);
@@ -199,51 +264,89 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    // Prefijos SCIAN de la categoría detectada (vacío = sin filtro por código).
+    const prefijosCategoria: string[] = categoriaDetectada
+      ? CATEGORIA_CODIGOS_ACT[categoriaDetectada] ?? []
+      : [];
+
+    if (categoriaDetectada && prefijosCategoria.length === 0) {
+      // C21 ("cadenas comerciales / franquicias") no tiene mapeo SCIAN: si
+      // dejáramos la categoría puesta sin filtro por código, la búsqueda
+      // devolvería 20 filas arbitrarias de toda la tabla. Mejor buscar por
+      // nombre como si no hubiera categoría.
+      terminoFiltroNombre = rawQ;
+      categoriaDetectada = null;
+    }
+
     // --- CONSTRUCCIÓN DE CONSULTA DINÁMICA PARA POSTGRESQL ---
+    // Tabla real: carto.denuenacional052026. Mapeo de columnas:
+    //   nom_estab -> nombre | nom_vial -> calle | numero_ext -> num_ext
+    //   nomb_asent -> colonia | cod_postal -> cp | entidad -> estado
+    //   latitud -> lat | longitud -> lon
+    //   telefono_limpio (o telefono) -> telefono
+    //   correoelec_limpio (o correoelec) -> email
+    //   www_limpia (o www) -> web
+    //   nombre_act -> categoria (la actividad SCIAN, ya que categoria_coloquial
+    //   está en NULL en toda la tabla)
+    // Los slugs se devuelven ya para la página de detalle de la Fase 2.
     const whereConditions: string[] = [];
     const args: (string | number)[] = [];
     let paramIndex = 1; // Contador dinámico para $1, $2, $3...
 
-    if (categoriaDetectada) {
-      whereConditions.push(`dp.categoria_id = $${paramIndex++}`);
-      args.push(categoriaDetectada);
+    if (categoriaDetectada && prefijosCategoria.length > 0) {
+      // Un prefijo SCIAN equivale a un rango numérico: "7225" -> 722500..722599,
+      // "722514" -> 722514..722514. Con BETWEEN el filtro usa el índice btree
+      // sobre codigo_act (entero); un LIKE sobre codigo_act::text no lo usaría.
+      const rangeParts = prefijosCategoria.map((prefijo) => {
+        const bajo = Number(prefijo.padEnd(6, "0"));
+        const alto = Number(prefijo.padEnd(6, "9"));
+        args.push(bajo, alto);
+        const p1 = paramIndex++;
+        const p2 = paramIndex++;
+        return `(d.codigo_act BETWEEN $${p1} AND $${p2})`;
+      });
+      whereConditions.push(`(${rangeParts.join(" OR ")})`);
     }
 
     if (terminoFiltroNombre.length >= 2) {
       if (categoriaDetectada || estado) {
-        whereConditions.push(`dp.nombre ILIKE $${paramIndex++}`);
+        whereConditions.push(`d.nom_estab ILIKE $${paramIndex++}`);
         args.push(`%${terminoFiltroNombre}%`);
       } else {
-        whereConditions.push(`dp.nombre ILIKE $${paramIndex++}`);
+        whereConditions.push(`d.nom_estab ILIKE $${paramIndex++}`);
         args.push(`${terminoFiltroNombre}%`);
       }
     }
 
     if (estado) {
-      whereConditions.push(`dp.estado ILIKE $${paramIndex++}`);
+      whereConditions.push(`d.entidad ILIKE $${paramIndex++}`);
       args.push(estado);
     }
 
     if (municipio) {
-      whereConditions.push(`dp.municipio ILIKE $${paramIndex++}`);
+      whereConditions.push(`d.municipio ILIKE $${paramIndex++}`);
       args.push(municipio);
     }
 
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(" AND ")}` : "";
 
     const sqlQuery = `
-      SELECT 
-        dp.id, dp.nombre, dp.tipo_vial, dp.calle, dp.num_ext, 
-        dp.colonia, dp.cp, dp.municipio, dp.estado, dp.lat, dp.lon, 
-        dp.telefono, dp.email, dp.web, dc.nombre AS categoria
-      FROM directorio_prod dp
-      LEFT JOIN directorio_categorias dc ON dp.categoria_id = dc.id
+      SELECT
+        d.id, d.nom_estab AS nombre, d.tipo_vial, d.nom_vial AS calle,
+        d.numero_ext AS num_ext, d.nomb_asent AS colonia, d.cod_postal AS cp,
+        d.municipio, d.entidad AS estado, d.latitud AS lat, d.longitud AS lon,
+        COALESCE(d.telefono_limpio, d.telefono) AS telefono,
+        COALESCE(d.correoelec_limpio, d.correoelec) AS email,
+        COALESCE(d.www_limpia, d.www) AS web,
+        d.nombre_act AS categoria, d.codigo_act,
+        d.slug_negocio, d.slug_estado, d.slug_municipio, d.slug_colonia
+      FROM carto.denuenacional052026 d
       ${whereClause}
       LIMIT $${paramIndex};
     `;
     args.push(limit); // El límite siempre es el último parámetro
 
-    // Ejecutamos en Postgres
+    // Ejecutamos en Postgres (cliente único de lib/db.ts)
     const rows = await sql.unsafe(sqlQuery, args);
 
     const tipoResolucion = marcaDetectada
@@ -256,6 +359,7 @@ export async function GET(request: NextRequest) {
 
     // DIAGNÓSTICO: Registrar fin
     const endTime = performance.now();
+    console.log(`Categoría: ${categoriaDetectada ?? "ninguna"} | Prefijos SCIAN: ${prefijosCategoria.join(",") || "ninguno"}`);
     console.log(`Tiempo total ejecución: ${(endTime - startTime).toFixed(2)} ms`);
     console.log(`Filas devueltas: ${rows.length}`);
     console.log("=== FIN DE BÚSQUEDA ===\n");
@@ -274,6 +378,7 @@ export async function GET(request: NextRequest) {
           }
         : null,
       categoriaId: categoriaDetectada,
+      codigoActPrefijos: prefijosCategoria,
       data: rows,
     });
   } catch (error: any) {
