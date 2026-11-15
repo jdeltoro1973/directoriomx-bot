@@ -89,6 +89,19 @@ import fs from "fs";
 //     auto, costura, nutricion, escolar, cooperativa, instituto, salud,
 //     pesca) se dejan exactamente como están.
 
+// FASE 2-LOG (2026-11-14) — Registro de búsquedas (carto.busquedas_log).
+//  Una fila por búsqueda: qué se buscó, cómo se resolvió y cuántos
+//  resultados dio. Es lo que permite perfeccionar el buscador con el uso
+//  real (dirección acordada con Juan 23:09 CST): de este log salen las
+//  siguientes tandas de vocabulario y los huecos (qué devuelve cero, qué
+//  cae a nombre_directo). La tabla se crea con busquedas_log.sql (Juan la
+//  corre en Mapoteca); si aún no existe, el INSERT falla y se ignora en
+//  silencio: la búsqueda nunca se rompe por el registro.
+//  PRIVACIDAD: NO se registra IP, user-agent, lat/lon, cookies ni sesión.
+//  Solo la consulta, su resolución, los filtros, la página, el total, si
+//  se usó GPS (booleano) y la duración. La lat/lon del usuario NO se
+//  guarda aunque la haya compartido.
+
 // --- LÓGICA EN MEMORIA (Marcas y Categorías) ---
 interface RedCorporativa {
   id: string;
@@ -358,6 +371,58 @@ function resolverCategoria(texto: string): { catId: string; score: number } | nu
   return mejor;
 }
 
+// FASE 2-LOG — Registro de una búsqueda en carto.busquedas_log.
+// Una sola fila por búsqueda, con los valores ya calculados por la ruta.
+// PRIVACIDAD: no se registra IP, user-agent, lat/lon, cookies ni sesión;
+// solo la consulta, su resolución, los filtros, la página, el total, si
+// se usó GPS (booleano) y la duración. La lat/lon del usuario NO llega
+// aquí aunque la haya compartido: el llamador solo pasa cercaDeTi.
+// El registro NUNCA rompe la búsqueda: si el INSERT falla (la tabla aún
+// no existe, la base está lenta), se anota en consola y la respuesta
+// sale igual. Sin log en consola cuando tiene éxito (no ensuciar los
+// logs de Vercel).
+async function registrarBusqueda(datos: {
+  q: string;
+  tipoResolucion: string;
+  marca: string | null;
+  categoriaId: string | null;
+  codigoActPrefijos: string;
+  estado: string;
+  municipio: string;
+  page: number;
+  total: number;
+  cercaDeTi: boolean;
+  duracionMs: number;
+}): Promise<void> {
+  try {
+    await sql.unsafe(
+      `INSERT INTO carto.busquedas_log
+         (q, q_normalizado, tipo_resolucion, marca, categoria_id,
+          codigo_act_prefijos, estado, municipio, page, total,
+          cerca_de_ti, duracion_ms)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      [
+        datos.q,
+        normalizar(datos.q),
+        datos.tipoResolucion,
+        datos.marca,
+        datos.categoriaId,
+        datos.codigoActPrefijos,
+        datos.estado || null,
+        datos.municipio || null,
+        datos.page,
+        datos.total,
+        datos.cercaDeTi,
+        datos.duracionMs,
+      ]
+    );
+  } catch (error) {
+    // La búsqueda no depende del registro: si la tabla no existe todavía
+    // o el INSERT falla, se anota y la respuesta sale igual.
+    console.error("No se pudo registrar la búsqueda en carto.busquedas_log:", error);
+  }
+}
+
 // --- ENDPOINT PRINCIPAL ---
 export async function GET(request: NextRequest) {
   try {
@@ -622,6 +687,29 @@ export async function GET(request: NextRequest) {
       : categoriaDetectada
       ? "categoria"
       : "nombre_directo";
+
+    // FASE 2-LOG: registrar la búsqueda (una fila en carto.busquedas_log).
+    // Solo cuando hay q: una llamada sin q es navegar, no buscar, y no
+    // debe contaminar el top de consultas. Se espera al INSERT (son
+    // pocos ms) porque en Vercel una promesa sin await puede no
+    // ejecutarse antes de que se congele la función; si falla, el helper
+    // lo traga y la respuesta sale igual. duracion_ms mide la búsqueda,
+    // no el INSERT (se calcula antes de registrar).
+    if (rawQ) {
+      await registrarBusqueda({
+        q: rawQ,
+        tipoResolucion,
+        marca: marcaDetectada ? marcaDetectada.n : null,
+        categoriaId: categoriaDetectada,
+        codigoActPrefijos: prefijosCategoria.join(","),
+        estado,
+        municipio,
+        page,
+        total,
+        cercaDeTi: !!ubicacion,
+        duracionMs: Math.round(performance.now() - startTime),
+      });
+    }
 
     // DIAGNÓSTICO: Registrar fin
     const endTime = performance.now();
