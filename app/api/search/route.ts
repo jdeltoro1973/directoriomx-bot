@@ -20,6 +20,20 @@ import fs from "fs";
 //  4. Si faltan las variables de conexión, la ruta responde 500 con un
 //     mensaje claro en vez de colgarse hasta el timeout.
 
+// FASE 1.1 (2026-11-14) — Afinar marca vs. categoría ("zapatos" -> ZAPATA):
+//  1. Nuevo orden de resolución: palabra genérica con SCIAN propio
+//     (paso 0) > marca exacta (1.0) > categoría exacta (1.0) > marca
+//     casi exacta (>= 0.85) > categoría difusa (> 0.55).
+//     Antes la marca se revisaba primero con umbral 0.7 y "zapatos" daba
+//     Dice 0.727 contra "ZAPATA", así que nunca se miraba la categoría.
+//     El 0.85, y no 0.8, es a propósito: "zapato" vs "zapata" da 0.8
+//     exacto y debe ser categoría, no marca.
+//  2. Mapeo fino PALABRAS_CODIGOS_ACT: "zapatos"/"calzado"/"zapateria"
+//     apuntan directo al SCIAN 463310 (calzado al por menor, 45,379 filas
+//     verificadas en Mapoteca), no a toda la C14 (que también trae ropa
+//     463211 y muebles 466111). Lo mismo para "ropa" -> 463211 y
+//     "muebles"/"muebleria" -> 466111.
+
 // --- LÓGICA EN MEMORIA (Marcas y Categorías) ---
 interface RedCorporativa {
   id: string;
@@ -116,6 +130,24 @@ const CATEGORIA_CODIGOS_ACT: Record<string, string[]> = {
   C21: [], // sin mapeo SCIAN (ver comentario arriba)
   C22: ["622"], // hospitales
   C23: ["623", "6244"], // residencias de asistencia social; guarderías
+};
+
+// MAPEO FINO (FASE 1.1, 2026-11-14): palabra genérica -> categoría C y
+// prefijos SCIAN propios, en vez de toda la categoría.
+// Verificado en carto.denuenacional052026 el 2026-11-14:
+//   463310 "Comercio al por menor de calzado" = 45,379 negocios
+//   463211 ropa; 466111 muebles para el hogar.
+// La clave se compara con la búsqueda normalizada (sin acentos), así que
+// "zapatería" se escribe aquí "zapateria".
+const PALABRAS_CODIGOS_ACT: Record<string, { cat: string; prefijos: string[] }> = {
+  zapatos: { cat: "C14", prefijos: ["463310"] },
+  zapato: { cat: "C14", prefijos: ["463310"] },
+  calzado: { cat: "C14", prefijos: ["463310"] },
+  zapateria: { cat: "C14", prefijos: ["463310"] },
+  zapatillas: { cat: "C14", prefijos: ["463310"] },
+  ropa: { cat: "C14", prefijos: ["463211"] },
+  muebles: { cat: "C14", prefijos: ["466111"] },
+  muebleria: { cat: "C14", prefijos: ["466111"] },
 };
 
 function normalizar(txt: string): string {
@@ -225,17 +257,49 @@ export async function GET(request: NextRequest) {
     let marcaDetectada: RedCorporativa | null = null;
     let categoriaDetectada: string | null = null;
     let terminoFiltroNombre = "";
+    let mapeoFino: { cat: string; prefijos: string[] } | undefined;
 
     if (rawQ) {
+      // FASE 1.1 — Paso 0: palabra genérica con SCIAN propio. La lista
+      // PALABRAS_CODIGOS_ACT son palabras que Juan decidió que son
+      // categoría, no marca, aunque exista una cadena con ese nombre:
+      // "zapateria" tiene una marca ZAPATERIA de 24 unidades, pero la
+      // palabra significa "tienda de zapatos" y debe traer las 45,379
+      // zapaterías, no solo esa cadena. Por eso se revisa antes que la
+      // marca exacta. ("oxxo" no está en esa lista: es solo marca.)
+      const mapeoFino0 = PALABRAS_CODIGOS_ACT[normalizar(rawQ)];
+      if (mapeoFino0) {
+        mapeoFino = mapeoFino0;
+        categoriaDetectada = mapeoFino0.cat;
+      } else {
+      // FASE 1.1 — Orden de resolución (antes la marca se revisaba primero
+      // y con umbral 0.7, así que "zapatos" caía en la marca ZAPATA con
+      // Dice 0.727 sin mirar nunca la categoría). Orden nuevo:
+      //   1. Marca EXACTA (score 1.0): "oxxo", "tacos don pastor", "zapata".
+      //      La marca exacta manda, también sobre una keyword de categoría
+      //      ("oxxo" es keyword de C02 y marca a la vez).
+      //   2. Categoría EXACTA (score 1.0): la búsqueda ES una palabra
+      //      genérica ("zapatos", "tacos", "pan", "ferreteria").
+      //   3. Marca casi exacta (score >= 0.85): cubre typos leves en
+      //      nombres largos ("tacos don pasto" 0.966).
+      //      El 0.85, y no 0.8, es a propósito: "zapato" vs "zapata"
+      //      da 0.8 exacto y debe ser categoría, no marca.
+      //   4. Categoría difusa (> 0.55): como antes.
+      //   5. Búsqueda compuesta / por nombre: como antes.
       const matchMarca = resolverMarca(rawQ);
-      if (matchMarca && matchMarca.score >= 0.7) {
+      const matchCat = resolverCategoria(rawQ);
+
+      if (matchMarca && matchMarca.score >= 1.0) {
         marcaDetectada = matchMarca.marca;
         terminoFiltroNombre = matchMarca.marca.n;
+      } else if (matchCat && matchCat.score >= 1.0) {
+        categoriaDetectada = matchCat.catId;
+      } else if (matchMarca && matchMarca.score >= 0.85) {
+        marcaDetectada = matchMarca.marca;
+        terminoFiltroNombre = matchMarca.marca.n;
+      } else if (matchCat) {
+        categoriaDetectada = matchCat.catId;
       } else {
-        const matchCat = resolverCategoria(rawQ);
-        if (matchCat) {
-          categoriaDetectada = matchCat.catId;
-        } else {
           // Búsqueda compuesta (ej. "restaurante japones")
           const palabras = rawQ.split(/\s+/);
           let mejorCatMatch: { catId: string, token: string, score: number } | null = null;
@@ -261,11 +325,13 @@ export async function GET(request: NextRequest) {
             terminoFiltroNombre = rawQ;
           }
         }
-      }
+      } // cierra el else del paso 0 (palabra genérica con SCIAN propio)
     }
 
     // Prefijos SCIAN de la categoría detectada (vacío = sin filtro por código).
-    const prefijosCategoria: string[] = categoriaDetectada
+    const prefijosCategoria: string[] = mapeoFino
+      ? mapeoFino.prefijos
+      : categoriaDetectada
       ? CATEGORIA_CODIGOS_ACT[categoriaDetectada] ?? []
       : [];
 
