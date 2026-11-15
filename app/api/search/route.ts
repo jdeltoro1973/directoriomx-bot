@@ -102,6 +102,13 @@ import fs from "fs";
 //  se usó GPS (booleano) y la duración. La lat/lon del usuario NO se
 //  guarda aunque la haya compartido.
 
+// FASE 3-DETALLE (2026-11-14) — La página de detalle /negocio/[slug]-[clee]
+//  necesita la clee y el slug de cada resultado para enlazar la tarjeta.
+//  Por eso el SELECT trae ahora d.clee y las filas se devuelven con clee
+//  como string (su tipo en la tabla no está confirmado: puede ser texto o
+//  numérico; como string el enlace es estable) y slugNegocio en camelCase
+//  (el slug_negocio ya venía en el SELECT desde la Fase 2).
+
 // --- LÓGICA EN MEMORIA (Marcas y Categorías) ---
 interface RedCorporativa {
   id: string;
@@ -661,7 +668,7 @@ export async function GET(request: NextRequest) {
 
     const sqlQuery = `
       SELECT
-        d.id, d.nom_estab AS nombre, d.tipo_vial, d.nom_vial AS calle,
+        d.id, d.clee, d.nom_estab AS nombre, d.tipo_vial, d.nom_vial AS calle,
         d.numero_ext AS num_ext, d.nomb_asent AS colonia, d.cod_postal AS cp,
         d.municipio, d.entidad AS estado, d.latitud AS lat, d.longitud AS lon,
         COALESCE(d.telefono_limpio, d.telefono) AS telefono,
@@ -679,6 +686,17 @@ export async function GET(request: NextRequest) {
 
     // Ejecutamos en Postgres (cliente único de lib/db.ts)
     const rows = await sql.unsafe(sqlQuery, args);
+
+    // FASE 3-DETALLE: la página de detalle enlaza por /negocio/[slug]-[clee],
+    // así que cada fila lleva la clee como string (estable aunque su tipo
+    // en la tabla sea numérico) y el slug en camelCase para el frente.
+    // Si la clee viniera en NULL (no debería: es la llave del DENUE), la
+    // tarjeta se muestra sin enlace, como antes de esta fase.
+    const data = (rows as Record<string, unknown>[]).map((r) => ({
+      ...r,
+      clee: r.clee != null ? String(r.clee) : null,
+      slugNegocio: (r.slug_negocio as string | null) ?? null,
+    }));
 
     const tipoResolucion = marcaDetectada
       ? "marca_corporativa"
@@ -740,7 +758,7 @@ export async function GET(request: NextRequest) {
       totalPages,
       limit,
       cercaDeTi: !!ubicacion,
-      data: rows,
+      data,
     });
   } catch (error: any) {
     console.error("Error en /api/search:", error);

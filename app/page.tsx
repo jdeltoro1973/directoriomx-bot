@@ -3,6 +3,7 @@
 import { BrandBadge, MarcaCorporativa } from "@/components/BrandBadge";
 import React, { useEffect, useState, useRef } from "react";
 import Image from "next/image";
+import Link from "next/link";
 import { 
   Search, MapPin, Crosshair, Phone, Mail, 
   Wrench, Stethoscope, Coffee, Car, 
@@ -37,6 +38,10 @@ interface Negocio {
   web?: string;
   // Fase 2A: distancia en km a la ubicación del usuario (solo si compartió GPS).
   dist_km?: number | null;
+  // Fase 3-DETALLE: llave única del DENUE y slug para enlazar la tarjeta
+  // a /negocio/[slug]-[clee]. Si no hay clee, la tarjeta queda sin enlace.
+  clee?: string;
+  slugNegocio?: string | null;
 }
 
 export default function Home() {
@@ -425,7 +430,19 @@ export default function Home() {
                     className="p-5 bg-white rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow flex flex-col justify-between"
                   >
                     <div>
-                      <h3 className="font-semibold text-lg text-gray-900 leading-snug">{item.nombre}</h3>
+                      {/* Fase 3-DETALLE: el título enlaza a la página del negocio. */}
+                      {item.clee ? (
+                        <h3 className="font-semibold text-lg text-gray-900 leading-snug">
+                          <Link
+                            href={`/negocio/${item.slugNegocio || "negocio"}-${item.clee}`}
+                            className="hover:text-blue-600 hover:underline"
+                          >
+                            {item.nombre}
+                          </Link>
+                        </h3>
+                      ) : (
+                        <h3 className="font-semibold text-lg text-gray-900 leading-snug">{item.nombre}</h3>
+                      )}
                       {item.categoria && (
                         <span className="inline-block mt-1 text-xs font-medium px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700">
                           {item.categoria}
