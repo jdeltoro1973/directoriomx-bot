@@ -42,6 +42,9 @@ interface Negocio {
   // a /negocio/[slug]-[clee]. Si no hay clee, la tarjeta queda sin enlace.
   clee?: string;
   slugNegocio?: string | null;
+  // Fase 3.1-SLUG: slug canónico (nombre + municipio + estado) para la
+  // URL nueva /negocio/[slug]-[municipio]-[estado]-[clee].
+  slugCanonico?: string;
 }
 
 export default function Home() {
@@ -430,11 +433,12 @@ export default function Home() {
                     className="p-5 bg-white rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow flex flex-col justify-between"
                   >
                     <div>
-                      {/* Fase 3-DETALLE: el título enlaza a la página del negocio. */}
+                      {/* Fase 3.1-SLUG: el título enlaza a la página del negocio
+                          con el slug canónico (nombre + municipio + estado). */}
                       {item.clee ? (
                         <h3 className="font-semibold text-lg text-gray-900 leading-snug">
                           <Link
-                            href={`/negocio/${item.slugNegocio || "negocio"}-${item.clee}`}
+                            href={`/negocio/${item.slugCanonico || item.slugNegocio || "negocio"}-${item.clee}`}
                             className="hover:text-blue-600 hover:underline"
                           >
                             {item.nombre}

@@ -1,13 +1,21 @@
 import type { Metadata } from "next";
-import { notFound, redirect } from "next/navigation";
+import { notFound, permanentRedirect } from "next/navigation";
 import Link from "next/link";
 import { cache } from "react";
 import { sql } from "@/lib/db";
+import { construirSlugCanonico } from "@/lib/slug";
 import { ArrowLeft, Globe, Mail, MapPin, Navigation, Phone } from "lucide-react";
 
 // FASE 3-DETALLE (2026-11-14) — Página de detalle de un negocio:
 //   /negocio/[slug]-[clee]
 //   ej. /negocio/oxxo-centro-14120000123456789
+// FASE 3.1-SLUG (2026-11-15) — La URL ahora lleva municipio y estado:
+//   /negocio/[slug]-[municipio]-[estado]-[clee]
+//   ej. /negocio/fresh-salads-zapopan-jalisco-14120722515000333001000000U9
+//   El slug canónico se construye en lib/slug.ts (construirSlugCanonico):
+//   [slug_negocio, slug_municipio, slug_estado] con "-", saltando las
+//   partes NULL o vacías; si no queda ninguna, "negocio". NO se agregan
+//   colonia ni localidad (decidido con Juan 00:35 CST).
 //
 //  1. La URL lleva slug + clee porque el slug solo NO identifica un
 //     negocio: hay miles de OXXO y de "SIN NOMBRE" con el mismo slug.
@@ -33,8 +41,10 @@ import { ArrowLeft, Globe, Mail, MapPin, Navigation, Phone } from "lucide-react"
 
 export const instant = false;
 //  3. La página funciona aunque los slugs aún sean NULL (el SQL de
-//     slugs puede seguir corriendo): si slug_negocio es NULL, no hay
-//     redirect canónico, solo se renderiza con la clee.
+//     slugs puede seguir corriendo): el slug canónico siempre existe
+//     (construirSlugCanonico cae a "negocio" + municipio + estado),
+//     así que el redirect canónico aplica igual y la página se
+//     renderiza con solo la clee si hace falta.
 //  4. SEO: generateMetadata con título/descripción y URL canónica, y
 //     JSON-LD LocalBusiness con solo los campos presentes (nada
 //     inventado). Sin mapa embebido: el mapa es otro paso (Fase 2B).
@@ -124,7 +134,7 @@ export async function generateMetadata({
   if (!negocio) {
     return { title: "Negocio no encontrado | directorio.cc" };
   }
-  const slugReal = negocio.slug_negocio ?? "negocio";
+  const slugReal = construirSlugCanonico(negocio);
   const cleeStr = String(negocio.clee);
   const donde = [negocio.municipio, negocio.entidad].filter(Boolean).join(", ");
   const title = donde
@@ -156,12 +166,17 @@ export default async function PaginaNegocio({
   const negocio = await obtenerNegocio(clee);
   if (!negocio) notFound();
 
-  // URL canónica: si el slug de la URL no es el slug real del negocio
-  // (o la URL venía solo con la clee), redirigir a la canónica. Si el
-  // negocio aún no tiene slug (el SQL de slugs sigue corriendo), NO
-  // redirigir: la página funciona igual con solo la clee.
-  if (negocio.slug_negocio && slug !== negocio.slug_negocio) {
-    redirect(`/negocio/${negocio.slug_negocio}-${String(negocio.clee)}`);
+  // URL canónica (FASE 3.1-SLUG): slug_negocio + municipio + estado.
+  // Si el slug de la URL no es el canónico (URL vieja con solo el
+  // nombre, o URL solo con la clee), permanentRedirect (308) a la
+  // canónica. El canónico siempre existe — si falta el nombre es
+  // "negocio" — así que el redirect aplica aunque slug_negocio sea
+  // NULL; la página nunca se queda sin URL canónica. Las URLs viejas
+  // /negocio/[slug]-[clee] siguen funcionando: la búsqueda es por
+  // clee y el slug distinto dispara este redirect a la URL nueva.
+  const slugCanonico = construirSlugCanonico(negocio);
+  if (slug !== slugCanonico) {
+    permanentRedirect(`/negocio/${slugCanonico}-${String(negocio.clee)}`);
   }
 
   const direccion = direccionTexto(negocio);

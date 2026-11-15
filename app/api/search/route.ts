@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sql } from "@/lib/db";
+import { construirSlugCanonico } from "@/lib/slug";
 import path from "path";
 import fs from "fs";
 
@@ -108,6 +109,10 @@ import fs from "fs";
 //  como string (su tipo en la tabla no está confirmado: puede ser texto o
 //  numérico; como string el enlace es estable) y slugNegocio en camelCase
 //  (el slug_negocio ya venía en el SELECT desde la Fase 2).
+// FASE 3.1-SLUG (2026-11-15) — La URL de detalle ahora lleva municipio y
+//  estado: /negocio/[slug]-[municipio]-[estado]-[clee]. Cada fila lleva
+//  slugCanonico (lib/slug.ts), construido con los cuatro slugs que ya
+//  venían en el SELECT desde la Fase 1; el SELECT NO cambia.
 
 // --- LÓGICA EN MEMORIA (Marcas y Categorías) ---
 interface RedCorporativa {
@@ -690,12 +695,20 @@ export async function GET(request: NextRequest) {
     // FASE 3-DETALLE: la página de detalle enlaza por /negocio/[slug]-[clee],
     // así que cada fila lleva la clee como string (estable aunque su tipo
     // en la tabla sea numérico) y el slug en camelCase para el frente.
+    // FASE 3.1-SLUG: además lleva slugCanonico (nombre + municipio +
+    // estado, lib/slug.ts) para la URL nueva. Se conserva slugNegocio
+    // como está, por compatibilidad.
     // Si la clee viniera en NULL (no debería: es la llave del DENUE), la
     // tarjeta se muestra sin enlace, como antes de esta fase.
     const data = (rows as Record<string, unknown>[]).map((r) => ({
       ...r,
       clee: r.clee != null ? String(r.clee) : null,
       slugNegocio: (r.slug_negocio as string | null) ?? null,
+      slugCanonico: construirSlugCanonico({
+        slug_negocio: r.slug_negocio as string | null,
+        slug_municipio: r.slug_municipio as string | null,
+        slug_estado: r.slug_estado as string | null,
+      }),
     }));
 
     const tipoResolucion = marcaDetectada
