@@ -20,14 +20,24 @@ import { ArrowLeft, Globe, Mail, MapPin, Navigation, Phone } from "lucide-react"
 //     negocios). Se busca por clee::text — el cast es a propósito: el
 //     tipo de clee en la tabla no está confirmado (texto o numérico) y
 //     con el cast funciona en ambos casos.
+//     NOTA (2026-11-15): Next.js 16 con Cache Components activado
+//     prohíbe `export const dynamic = "force-dynamic"` y además
+//     intenta prerenderizar la página en el build; como la página
+//     usa `params` y consulta Postgres directamente (sin caché),
+//     el prerender falla ("encountered uncached or runtime data
+//     during prerendering"). La salida oficial es `instant = false`
+//     (guía de migración a Cache Components): marca el segmento
+//     como "allowed to block" y el build lo deja renderizarse bajo
+//     demanda (ƒ dinámica) en cada petición, sin intentar el
+//     prerender. Sin esta línea, el build no pasa.
+
+export const instant = false;
 //  3. La página funciona aunque los slugs aún sean NULL (el SQL de
 //     slugs puede seguir corriendo): si slug_negocio es NULL, no hay
 //     redirect canónico, solo se renderiza con la clee.
 //  4. SEO: generateMetadata con título/descripción y URL canónica, y
 //     JSON-LD LocalBusiness con solo los campos presentes (nada
 //     inventado). Sin mapa embebido: el mapa es otro paso (Fase 2B).
-
-export const dynamic = "force-dynamic";
 
 interface NegocioDetalle {
   clee: string | number;
