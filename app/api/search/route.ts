@@ -47,6 +47,19 @@ import fs from "fs";
 //  como palabra de categoría llegaba tarde: la marca MATERIALES PARA
 //  CONSTRUCCION ORTIZ (4 unidades) la ganaba con Dice 0.9.
 
+// FASE 2A (2026-11-14) — Paginación + orden por relevancia (acordado con Juan):
+//  1. Paginación: ?page= (20 por página), OFFSET, y la API devuelve total,
+//     totalPages, page y limit para el "mostrando 1-20 de N" del frente.
+//     Antes solo salían las primeras 20 filas y el resto era invisible.
+//  2. Orden por relevancia, en este orden: nombre exacto / que empieza con
+//     el término primero; luego cercanía si el usuario compartió ubicación
+//     (?lat&lon, distancia equirectangular en km, sin PostGIS); luego los
+//     que tienen teléfono y correo; al final id, para que las páginas sean
+//     estables (sin ORDER BY, LIMIT/OFFSET puede repetir o brincar filas).
+//  3. La deduplicación de filas DENUE (punto 2 de la hoja de decisión) NO
+//     entra aquí: Juan aún no eligió la opción. Tampoco el mapa (Fase 2B):
+//     los puntos irán desde GeoServer, pendiente la URL y la capa.
+
 // --- LÓGICA EN MEMORIA (Marcas y Categorías) ---
 interface RedCorporativa {
   id: string;
@@ -177,6 +190,28 @@ function normalizar(txt: string): string {
   return txt.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
 }
 
+// FASE 2A — Utilidades puras (exportadas para probarlas sin base de datos):
+// parsearPagina: "?page=" es 1 si falta, no es número o es menor que 1.
+// validarUbicacion: lat/lon solo valen si son números dentro de rango;
+// cualquier otra cosa (vacío, texto, 200°) se ignora y se ordena sin cercanía.
+export function parsearPagina(valor: string | null): number {
+  const n = parseInt(valor ?? "", 10);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
+}
+
+export function validarUbicacion(
+  latStr: string | null,
+  lonStr: string | null
+): { lat: number; lon: number } | null {
+  if (latStr == null || lonStr == null) return null;
+  if (latStr.trim() === "" || lonStr.trim() === "") return null;
+  const lat = Number(latStr);
+  const lon = Number(lonStr);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+  return { lat, lon };
+}
+
 function diceBiGrams(a: string, b: string): number {
   if (a === b) return 1.0;
   if (a.length < 2 || b.length < 2) return 0.0;
@@ -275,7 +310,12 @@ export async function GET(request: NextRequest) {
     const rawQ = (searchParams.get("q") || "").trim();
     const estado = (searchParams.get("estado") || "").trim();
     const municipio = (searchParams.get("municipio") || "").trim();
+    // FASE 2A: paginación y ubicación. ?page= es 1 si falta o es inválida;
+    // lat/lon solo valen si son números dentro de rango (ver validarUbicacion).
+    const page = parsearPagina(searchParams.get("page"));
     const limit = 20;
+    const offset = (page - 1) * limit;
+    const ubicacion = validarUbicacion(searchParams.get("lat"), searchParams.get("lon"));
 
     let marcaDetectada: RedCorporativa | null = null;
     let categoriaDetectada: string | null = null;
@@ -418,6 +458,65 @@ export async function GET(request: NextRequest) {
     }
 
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(" AND ")}` : "";
+    // Los parámetros del WHERE son los primeros de `args`; el COUNT de abajo
+    // usa solo estos (los $n del orden/distancia no aparecen en esa consulta).
+    const nParamsWhere = args.length;
+
+    // --- FASE 2A: ORDEN POR RELEVANCIA (acordado con Juan 2026-11-14) ---
+    // Orden, en este orden:
+    //   1. Nombre: si la búsqueda trae término de nombre, el nombre exacto
+    //      primero, luego los que empiezan con el término, luego el resto.
+    //      En búsquedas solo por categoría no hay término y este nivel no
+    //      discrimina (todos quedan igual).
+    //   2. Cercanía: solo si el usuario compartió su ubicación (?lat&lon).
+    //      Distancia equirectangular en km: 1° de latitud ≈ 111.32 km y 1°
+    //      de longitud ≈ 111.32·cos(lat) km. No usa PostGIS a propósito: la
+    //      tabla ya trae latitud/longitud y a escala municipal el error es
+    //      de centésimas; si un día se quiere geodésica exacta, es una línea
+    //      con ST_Distance. Los negocios sin lat/lon quedan al final.
+    //   3. Contacto: primero los que tienen teléfono, luego los que tienen
+    //      correo (si el directorio es para contactar, no solo para ver).
+    //   4. id: orden estable, para que LIMIT/OFFSET no repita ni brinque
+    //      negocios entre páginas (sin ORDER BY el orden no es garantizado).
+    const orderParts: string[] = [];
+    if (terminoFiltroNombre.length >= 2) {
+      // Nombre exacto (ILIKE sin comodines = igualdad sin importar
+      // mayúsculas) primero; luego los que empiezan con el término.
+      args.push(terminoFiltroNombre, `${terminoFiltroNombre}%`);
+      const pExacto = paramIndex++;
+      const pEmpieza = paramIndex++;
+      orderParts.push(
+        `(CASE WHEN d.nom_estab ILIKE $${pExacto} THEN 0 WHEN d.nom_estab ILIKE $${pEmpieza} THEN 1 ELSE 2 END) ASC`
+      );
+    }
+
+    // La distancia se calcula en el SELECT como dist_km (así el frente la
+    // muestra: "a 1.2 km") y el ORDER BY usa ese alias.
+    let selectDistancia: string;
+    if (ubicacion) {
+      args.push(ubicacion.lat, ubicacion.lon, ubicacion.lat);
+      const pLat = paramIndex++;
+      const pLon = paramIndex++;
+      const pLatCos = paramIndex++;
+      selectDistancia = `111.32 * SQRT(POWER(d.latitud - $${pLat}, 2) + POWER((d.longitud - $${pLon}) * COS(RADIANS($${pLatCos})), 2)) AS dist_km`;
+      orderParts.push("dist_km ASC NULLS LAST");
+    } else {
+      selectDistancia = `NULL AS dist_km`;
+    }
+
+    orderParts.push("(COALESCE(d.telefono_limpio, d.telefono) IS NOT NULL) DESC");
+    orderParts.push("(COALESCE(d.correoelec_limpio, d.correoelec) IS NOT NULL) DESC");
+    orderParts.push("d.id ASC");
+    const orderClause = `ORDER BY ${orderParts.join(", ")}`;
+
+    // Total de resultados con el MISMO filtro (para "mostrando 1-20 de N"
+    // y las páginas). El COUNT usa solo los parámetros del WHERE.
+    const countRows = await sql.unsafe(
+      `SELECT COUNT(*)::int AS total FROM carto.denuenacional052026 d ${whereClause}`,
+      args.slice(0, nParamsWhere)
+    );
+    const total = (countRows[0] as { total?: number } | undefined)?.total ?? 0;
+    const totalPages = Math.max(1, Math.ceil(total / limit));
 
     const sqlQuery = `
       SELECT
@@ -428,12 +527,14 @@ export async function GET(request: NextRequest) {
         COALESCE(d.correoelec_limpio, d.correoelec) AS email,
         COALESCE(d.www_limpia, d.www) AS web,
         d.nombre_act AS categoria, d.codigo_act,
-        d.slug_negocio, d.slug_estado, d.slug_municipio, d.slug_colonia
+        d.slug_negocio, d.slug_estado, d.slug_municipio, d.slug_colonia,
+        ${selectDistancia}
       FROM carto.denuenacional052026 d
       ${whereClause}
-      LIMIT $${paramIndex};
+      ${orderClause}
+      LIMIT $${paramIndex} OFFSET $${paramIndex + 1};
     `;
-    args.push(limit); // El límite siempre es el último parámetro
+    args.push(limit, offset);
 
     // Ejecutamos en Postgres (cliente único de lib/db.ts)
     const rows = await sql.unsafe(sqlQuery, args);
@@ -449,6 +550,7 @@ export async function GET(request: NextRequest) {
     // DIAGNÓSTICO: Registrar fin
     const endTime = performance.now();
     console.log(`Categoría: ${categoriaDetectada ?? "ninguna"} | Prefijos SCIAN: ${prefijosCategoria.join(",") || "ninguno"}`);
+    console.log(`Página: ${page} de ${totalPages} | Total: ${total} | Cercanía: ${ubicacion ? "sí" : "no"}`);
     console.log(`Tiempo total ejecución: ${(endTime - startTime).toFixed(2)} ms`);
     console.log(`Filas devueltas: ${rows.length}`);
     console.log("=== FIN DE BÚSQUEDA ===\n");
@@ -468,6 +570,12 @@ export async function GET(request: NextRequest) {
         : null,
       categoriaId: categoriaDetectada,
       codigoActPrefijos: prefijosCategoria,
+      // FASE 2A: paginación y cercanía para el frente.
+      page,
+      total,
+      totalPages,
+      limit,
+      cercaDeTi: !!ubicacion,
       data: rows,
     });
   } catch (error: any) {

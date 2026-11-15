@@ -35,6 +35,8 @@ interface Negocio {
   telefono?: string;
   email?: string;
   web?: string;
+  // Fase 2A: distancia en km a la ubicación del usuario (solo si compartió GPS).
+  dist_km?: number | null;
 }
 
 export default function Home() {
@@ -52,6 +54,18 @@ export default function Home() {
   // Fase 1: antes un error del servidor (ej. la base no responde) se tragaba
   // en silencio y se mostraba como "0 resultados". Ahora se guarda y se muestra.
   const [errorBusqueda, setErrorBusqueda] = useState<string | null>(null);
+
+  // Fase 2A: paginación y ubicación. La página actual y el total vienen de
+  // la API; la ubicación es la del GPS del usuario, si la compartió.
+  const [pagina, setPagina] = useState(1);
+  const [totalResultados, setTotalResultados] = useState(0);
+  const [totalPaginas, setTotalPaginas] = useState(1);
+  const [limitePagina, setLimitePagina] = useState(20);
+  const [ubicacion, setUbicacion] = useState<{ lat: number; lon: number } | null>(null);
+  const [gpsActivo, setGpsActivo] = useState(false);
+  const [gpsError, setGpsError] = useState<string | null>(null);
+  const [gpsBuscando, setGpsBuscando] = useState(false);
+  const resultadosRef = useRef<HTMLElement>(null);
 
   // Estados del Autocompletado
   const [suggestions, setSuggestions] = useState<{nombre: string, unidades: number}[]>([]);
@@ -102,11 +116,7 @@ export default function Home() {
     return () => clearTimeout(delayFn);
   }, [searchQuery]);
 
-  const handleGeolocation = () => {
-    alert("Pronto conectaremos el GPS mágico aquí 📍");
-  };
-
-  const ejecutarBusqueda = async (query: string, est: string, mun: string) => {
+  const ejecutarBusqueda = async (query: string, est: string, mun: string, pag: number = 1, loc: { lat: number; lon: number } | null = ubicacion) => {
     setLoading(true);
     setHasSearched(true);
     setShowSuggestions(false);
@@ -117,6 +127,11 @@ export default function Home() {
       if (query) params.append("q", query);
       if (est) params.append("estado", est);
       if (mun) params.append("municipio", mun);
+      if (pag > 1) params.append("page", String(pag));
+      if (loc) {
+        params.append("lat", String(loc.lat));
+        params.append("lon", String(loc.lon));
+      }
 
       const res = await fetch(`/api/search?${params.toString()}`);
       const data = await res.json();
@@ -125,12 +140,20 @@ export default function Home() {
         setResults(data.data);
         setMarcaResult(data.marca || null);
         setTipoResolucion(data.tipoResolucion || "");
+        // Fase 2A: la API devuelve la página y el total para la paginación.
+        setPagina(data.page ?? pag);
+        setTotalResultados(data.total ?? data.data.length);
+        setTotalPaginas(data.totalPages ?? 1);
+        setLimitePagina(data.limit ?? 20);
       } else {
         // Error real del servidor (base de datos, conexión, etc.): mostrarlo,
         // no fingir que simplemente no hubo resultados.
         setResults([]);
         setMarcaResult(null);
         setTipoResolucion("");
+        setPagina(1);
+        setTotalResultados(0);
+        setTotalPaginas(1);
         setErrorBusqueda(
           data.error || "La búsqueda falló. Inténtalo de nuevo en un momento."
         );
@@ -140,10 +163,52 @@ export default function Home() {
       setResults([]);
       setMarcaResult(null);
       setTipoResolucion("");
+      setPagina(1);
+      setTotalResultados(0);
+      setTotalPaginas(1);
       setErrorBusqueda("No se pudo conectar con el servidor de búsqueda. Revisa tu conexión e inténtalo de nuevo.");
     } finally {
       setLoading(false);
     }
+  };
+
+  // Fase 2A: el botón del GPS ahora sí hace algo. Pide la ubicación del
+  // navegador (el usuario tiene que aceptarlo), guarda lat/lon y vuelve a
+  // buscar desde la página 1 para que el servidor ordene por cercanía.
+  // Si se pulsa de nuevo con el GPS activo, se quita la ubicación y se
+  // vuelve a buscar sin cercanía.
+  const handleGeolocation = () => {
+    if (gpsActivo) {
+      setUbicacion(null);
+      setGpsActivo(false);
+      setGpsError(null);
+      ejecutarBusqueda(searchQuery, estado, municipio, 1, null);
+      return;
+    }
+    if (!("geolocation" in navigator)) {
+      setGpsError("Este navegador no tiene geolocalización.");
+      return;
+    }
+    setGpsBuscando(true);
+    setGpsError(null);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const loc = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+        setUbicacion(loc);
+        setGpsActivo(true);
+        setGpsBuscando(false);
+        ejecutarBusqueda(searchQuery, estado, municipio, 1, loc);
+      },
+      (err) => {
+        setGpsBuscando(false);
+        setGpsError(
+          err.code === err.PERMISSION_DENIED
+            ? "No diste permiso de ubicación. Actívalo en el navegador para ordenar por cercanía."
+            : "No se pudo obtener tu ubicación. Inténtalo de nuevo."
+        );
+      },
+      { timeout: 10000 }
+    );
   };
 
   const handleSearchSubmit = (e: React.FormEvent) => {
@@ -292,8 +357,9 @@ export default function Home() {
                 <button 
                   type="button"
                   onClick={handleGeolocation}
-                  className="absolute right-3 p-1.5 text-yellow-500 hover:bg-yellow-50 rounded-lg transition-colors group"
-                  title="Usar mi ubicación actual"
+                  disabled={gpsBuscando}
+                  className={`absolute right-3 p-1.5 rounded-lg transition-colors group ${gpsActivo ? "bg-blue-600 text-white hover:bg-blue-700" : "text-yellow-500 hover:bg-yellow-50"}`}
+                  title={gpsActivo ? "Ubicación activa: ordenando por cercanía (pulsa para quitarla)" : "Usar mi ubicación actual"}
                 >
                   <Crosshair className="w-5 h-5 group-hover:scale-110 transition-transform" />
                 </button>
@@ -308,15 +374,28 @@ export default function Home() {
                 {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Buscar"}
               </button>
             </form>
+            {/* Fase 2A: aviso del GPS (error o ubicación activa). */}
+            {gpsError && (
+              <p className="text-sm text-red-600 mt-3">{gpsError}</p>
+            )}
+            {gpsActivo && !gpsError && (
+              <p className="text-sm text-blue-600 mt-3">Ubicación activa: los resultados se ordenan por cercanía a ti. Pulsa el GPS otra vez para quitarla.</p>
+            )}
           </div>
         </section>
 
         {/* 3. SECCIÓN DE RESULTADOS */}
         {hasSearched && (
-          <section className="py-12 px-4 max-w-5xl mx-auto">
-            <h2 className="text-xl font-bold text-gray-900 mb-6">
-              Resultados de búsqueda ({results.length})
+          <section ref={resultadosRef} className="py-12 px-4 max-w-5xl mx-auto">
+            <h2 className="text-xl font-bold text-gray-900 mb-2">
+              Resultados de búsqueda ({totalResultados})
             </h2>
+            {totalResultados > 0 && (
+              <p className="text-sm text-gray-500 mb-6">
+                Mostrando {(pagina - 1) * limitePagina + 1}–{Math.min(pagina * limitePagina, totalResultados)} de {totalResultados}
+                {gpsActivo ? " · ordenados por cercanía a ti" : ""}
+              </p>
+            )}
 
             {loading ? (
               <div className="flex justify-center items-center py-16 text-gray-400">
@@ -360,6 +439,12 @@ export default function Home() {
                             .join(" ")}
                         </span>
                       </p>
+                      {/* Fase 2A: distancia al usuario, solo con GPS activo. */}
+                      {gpsActivo && item.dist_km != null && (
+                        <p className="text-xs text-blue-600 mt-1 font-medium">
+                          a {item.dist_km < 1 ? `${Math.round(item.dist_km * 1000)} m` : `${item.dist_km.toFixed(1)} km`} de ti
+                        </p>
+                      )}
                     </div>
 
                     <div className="mt-4 pt-3 border-t border-gray-50 flex flex-wrap items-center gap-4 text-xs text-gray-600">
@@ -387,6 +472,37 @@ export default function Home() {
                   </div>
                   ))}
                 </div>
+
+                {/* Fase 2A: paginación (20 por página). */}
+                {totalPaginas > 1 && (
+                  <div className="mt-8 flex items-center justify-center gap-3">
+                    <button
+                      type="button"
+                      disabled={pagina <= 1 || loading}
+                      onClick={() => {
+                        ejecutarBusqueda(searchQuery, estado, municipio, pagina - 1);
+                        resultadosRef.current?.scrollIntoView({ behavior: "smooth" });
+                      }}
+                      className="px-4 py-2 rounded-xl border border-gray-200 bg-white text-sm font-medium text-gray-700 hover:border-blue-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      ← Anterior
+                    </button>
+                    <span className="text-sm text-gray-500">
+                      Página {pagina} de {totalPaginas}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={pagina >= totalPaginas || loading}
+                      onClick={() => {
+                        ejecutarBusqueda(searchQuery, estado, municipio, pagina + 1);
+                        resultadosRef.current?.scrollIntoView({ behavior: "smooth" });
+                      }}
+                      className="px-4 py-2 rounded-xl border border-gray-200 bg-white text-sm font-medium text-gray-700 hover:border-blue-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Siguiente →
+                    </button>
+                  </div>
+                )}
               </>
             )}
           </section>
