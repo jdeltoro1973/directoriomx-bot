@@ -34,6 +34,19 @@ import fs from "fs";
 //     463211 y muebles 466111). Lo mismo para "ropa" -> 463211 y
 //     "muebles"/"muebleria" -> 466111.
 
+// FASE 1.2 (2026-11-14) — Familia cemento (opción B, elegida por Juan):
+//  No existe clase SCIAN de venta de cemento al público: el que vende
+//  cemento al menudeo es la ferretería (467111, 75,726 filas) y el
+//  mayoreo de cemento/tabique/grava es el 434211 (20,015 filas),
+//  verificados en Mapoteca el 2026-11-14. Por eso la familia cemento,
+//  tabique, varilla, grava, arena, concreto y la frase "materiales para
+//  construccion" apuntan a C17 con AMBOS prefijos: ferreterías +
+//  almacenes de mayoreo. Solo estas palabras llevan el 434211;
+//  "ferreteria" en general sigue siendo solo 467111 (ver C17).
+//  La frase "materiales para construccion" va en el mapeo fino porque
+//  como palabra de categoría llegaba tarde: la marca MATERIALES PARA
+//  CONSTRUCCION ORTIZ (4 unidades) la ganaba con Dice 0.9.
+
 // --- LÓGICA EN MEMORIA (Marcas y Categorías) ---
 interface RedCorporativa {
   id: string;
@@ -79,7 +92,7 @@ const CATEGORIAS_KEYWORDS: Record<string, string[]> = {
   C14: ["ropa", "calzado", "zapatos", "zapateria", "boutique", "vestidos", "blancos", "telas", "muebles", "muebleria"],
   C15: ["escuela", "colegio", "universidad", "instituto", "primaria", "secundaria", "preparatoria", "kinder"],
   C16: ["papeleria", "regalos", "novedades", "libreria", "copias", "internet"],
-  C17: ["ferreteria", "tlapaleria", "tornillos", "herramientas", "plomeria", "material electrico", "pinturas", "materiales"],
+  C17: ["ferreteria", "tlapaleria", "tornillos", "herramientas", "plomeria", "material electrico", "pinturas", "materiales", "cemento", "tabique", "varilla", "grava", "arena", "concreto", "materiales para construccion"],
   C18: ["farmacia", "botica", "drogueria", "medicamentos"],
   C19: ["bar", "bares", "cantina", "cerveceria", "antro", "pub"],
   C20: ["gimnasio", "gym", "fitness", "deportes", "crossfit", "pesas"],
@@ -148,6 +161,16 @@ const PALABRAS_CODIGOS_ACT: Record<string, { cat: string; prefijos: string[] }> 
   ropa: { cat: "C14", prefijos: ["463211"] },
   muebles: { cat: "C14", prefijos: ["466111"] },
   muebleria: { cat: "C14", prefijos: ["466111"] },
+  // FASE 1.2 — Familia cemento (opción B): ferreterías (467111) + mayoreo
+  // de cemento/tabique/grava (434211). Solo estas palabras llevan el
+  // mayoreo; "ferreteria" sigue siendo solo 467111.
+  cemento: { cat: "C17", prefijos: ["467111", "434211"] },
+  tabique: { cat: "C17", prefijos: ["467111", "434211"] },
+  varilla: { cat: "C17", prefijos: ["467111", "434211"] },
+  grava: { cat: "C17", prefijos: ["467111", "434211"] },
+  arena: { cat: "C17", prefijos: ["467111", "434211"] },
+  concreto: { cat: "C17", prefijos: ["467111", "434211"] },
+  "materiales para construccion": { cat: "C17", prefijos: ["467111", "434211"] },
 };
 
 function normalizar(txt: string): string {
