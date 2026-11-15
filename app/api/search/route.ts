@@ -60,6 +60,35 @@ import fs from "fs";
 //     entra aquí: Juan aún no eligió la opción. Tampoco el mapa (Fase 2B):
 //     los puntos irán desde GeoServer, pendiente la URL y la capa.
 
+// FASE 1.3 (2026-11-14) — Vocabulario basado en datos + 13 categorías nuevas:
+//  1. Juan corrió en Mapoteca el top 200 de palabras de nom_estab y el top
+//     500 de pares palabra×codigo_act sobre carto.denuenacional052026
+//     (catálogo y análisis en workspace/directorio-cc/vocabulario/).
+//     El catálogo clasifica cada palabra: CUBIERTA 55 (37.0% de las
+//     8,120,997 ocurrencias), HUECO 70 (18.4%), AMBIGUA 12, RUIDO 59,
+//     MARCA 4. Esta tanda ataca los huecos y los errores de mapeo.
+//  2. 13 categorías nuevas C24–C36 para giros que no existían en el
+//     esquema: carpintería y herrería, iglesias y templos, agua
+//     purificada, cerveza/vinos/licores, florería y viveros, tecnología
+//     y celulares, lavandería y tintorería, hoteles, veterinaria y
+//     mascotas, estacionamientos, servicios profesionales, bordados y
+//     confección, salones de fiestas. Los botones del inicio para estas
+//     categorías son un paso de UI aparte (esta fase solo toca route.ts).
+//  3. Corrección de bug C20: el prefijo era '713940', que con la lógica
+//     de rangos (padEnd a 6 dígitos) solo cubre el código exacto 713940,
+//     que no es una clase SCIAN real (es el código de la subrama); los
+//     gimnasios son 713943. Verificado en vivo: "gym" devolvía total 0.
+//     El prefijo correcto es '71394' (713940–713949).
+//  4. Decisiones delicadas: "shop" NO se añadió como keyword de C12
+//     ("coffee shop" caería en C12 por la ruta compuesta y es una
+//     cafetería, no estética); "pasteles", "postres" y "reposteria" se
+//     quedan en C07 sin verificar con datos (solo "pasteleria" se movió
+//     a C08 con evidencia); C10 con prefijo 8111 ya incluía 811191 y
+//     811192 por rango desde la Fase 1 (comportamiento preexistente);
+//     las 12 palabras ambiguas (calzado, pintura, bodega, accesorios,
+//     auto, costura, nutricion, escolar, cooperativa, instituto, salud,
+//     pesca) se dejan exactamente como están.
+
 // --- LÓGICA EN MEMORIA (Marcas y Categorías) ---
 interface RedCorporativa {
   id: string;
@@ -89,32 +118,48 @@ function getRedes(): RedCorporativa[] {
 }
 
 const CATEGORIAS_KEYWORDS: Record<string, string[]> = {
-  C01: ["abarrotes", "miscelanea", "tiendita", "viveres", "tienda"],
-  C02: ["minisuper", "conveniencia", "oxxo", "seven", "supercito"],
+  C01: ["abarrotes", "miscelanea", "tiendita", "viveres", "tienda", "super", "dulceria", "dulces", "cremeria", "semillas", "chiles", "tendajon", "tendejon"],
+  C02: ["conveniencia", "oxxo", "seven", "supercito"],
   C03: ["supermercado", "mayorista", "bodega", "walmart", "soriana", "chedraui", "costco", "sams"],
-  C04: ["taqueria", "tacos", "antojitos", "quesadillas", "tortas", "tamales", "gorditas", "birria"],
-  C05: ["comida rapida", "hamburguesas", "pizzas", "pizza", "hot dogs", "sushi", "alitas"],
-  C06: ["restaurante", "mariscos", "comedor", "cocina economica", "fondita", "buffet", "japones", "chino"],
-  C07: ["cafeteria", "cafe", "pasteleria", "pasteles", "postres", "reposteria", "heladeria", "helados", "neveria"],
-  C08: ["panaderia", "pan", "tortilleria", "tortillas", "molino"],
-  C09: ["carniceria", "carne", "polleria", "pollo", "pescaderia", "verduleria", "fruteria", "frutas", "verduras"],
-  C10: ["taller", "talleres", "mecanico", "mecanica", "hojalateria", "frenos", "suspension", "electrico automotriz"],
-  C11: ["refaccionaria", "refacciones", "autolavado", "car wash", "llantas", "llantera", "vulcanizadora"],
-  C12: ["estetica", "barberia", "barber", "salon de belleza", "peluqueria", "unas", "spa"],
-  C13: ["consultorio", "medico", "doctor", "doctora", "dentista", "dental", "odontologo", "psicologo", "pediatra"],
-  C14: ["ropa", "calzado", "zapatos", "zapateria", "boutique", "vestidos", "blancos", "telas", "muebles", "muebleria"],
-  C15: ["escuela", "colegio", "universidad", "instituto", "primaria", "secundaria", "preparatoria", "kinder"],
-  C16: ["papeleria", "regalos", "novedades", "libreria", "copias", "internet"],
-  C17: ["ferreteria", "tlapaleria", "tornillos", "herramientas", "plomeria", "material electrico", "pinturas", "materiales", "cemento", "tabique", "varilla", "grava", "arena", "concreto", "materiales para construccion"],
-  C18: ["farmacia", "botica", "drogueria", "medicamentos"],
+  C04: ["taqueria", "tacos", "antojitos", "quesadillas", "tortas", "tamales", "gorditas", "birria", "carnitas", "loncheria", "cenaduria", "barbacoa", "elotes"],
+  C05: ["comida rapida", "hamburguesas", "pizzas", "pizza", "hot dogs", "sushi", "alitas", "pizzeria", "rosticeria"],
+  C06: ["restaurante", "mariscos", "comedor", "cocina economica", "fondita", "buffet", "japones", "chino", "cocina", "comida", "fonda"],
+  C07: ["cafeteria", "cafe", "pasteles", "postres", "reposteria", "heladeria", "helados", "neveria", "jugos", "licuados"],
+  C08: ["panaderia", "pan", "tortilleria", "tortillas", "molino", "nixtamal"],
+  C09: ["carniceria", "carne", "polleria", "pollo", "pescaderia", "verduleria", "fruteria", "frutas", "verduras", "recauderia", "legumbres"],
+  C10: ["taller", "talleres", "mecanico", "mecanica", "hojalateria", "frenos", "suspension", "electrico automotriz", "reparacion", "automotriz", "electrico", "motos", "bicicletas", "moto", "tapiceria", "cerrajeria"],
+  C11: ["refaccionaria", "refacciones", "autolavado", "car wash", "llantas", "llantera", "vulcanizadora", "lavado"],
+  C12: ["estetica", "barberia", "barber", "salon de belleza", "peluqueria", "unas", "spa", "salon", "belleza", "unisex", "nails", "beauty", "studio"],
+  C13: ["consultorio", "medico", "doctor", "doctora", "dentista", "dental", "odontologo", "psicologo", "pediatra", "clinica", "laboratorio", "analisis", "odontologia"],
+  C14: ["ropa", "calzado", "zapatos", "zapateria", "boutique", "vestidos", "blancos", "telas", "muebles", "muebleria", "bazar"],
+  C15: ["escuela", "colegio", "universidad", "instituto", "primaria", "secundaria", "preparatoria", "kinder", "ninos"],
+  C16: ["papeleria", "regalos", "novedades", "libreria", "copias", "merceria", "joyeria", "cosmeticos", "artesanias", "plasticos"],
+  C17: ["ferreteria", "tlapaleria", "tornillos", "herramientas", "plomeria", "material electrico", "pinturas", "materiales", "cemento", "tabique", "varilla", "grava", "arena", "concreto", "materiales para construccion", "limpieza", "jarceria", "jarcieria", "aluminio", "vidrios", "vidrieria", "construccion"],
+  C18: ["farmacia", "botica", "drogueria", "medicamentos", "optica"],
   C19: ["bar", "bares", "cantina", "cerveceria", "antro", "pub"],
   C20: ["gimnasio", "gym", "fitness", "deportes", "crossfit", "pesas"],
   C21: ["cadenas comerciales", "franquicias"],
-  C22: ["hospital", "clinica", "sanatorio", "urgencias"],
+  C22: ["hospital", "sanatorio", "urgencias"],
   C23: ["guarderia", "asilo", "asistencia social"],
+  // FASE 1.3 — Categorías nuevas C24–C36 (aprobadas por Juan 2026-11-14).
+  // Giros sin Cxx en el esquema anterior, con su código SCIAN dominante
+  // verificado en el catálogo del vocabulario.
+  C24: ["carpinteria", "herreria", "soldadura", "balconeria"],
+  C25: ["iglesia", "capilla", "templo", "parroquia"],
+  C26: ["agua", "purificadora"],
+  C27: ["cerveza", "vinos", "licores", "deposito", "six", "modelorama", "refrescos"],
+  C28: ["floreria", "flores", "vivero", "plantas"],
+  C29: ["celulares", "celular", "ciber", "internet", "electronica"],
+  C30: ["lavanderia", "tintoreria"],
+  C31: ["hotel"],
+  C32: ["veterinaria", "mascotas"],
+  C33: ["estacionamiento"],
+  C34: ["juridico", "contable", "despacho", "abogados", "notaria", "foto"],
+  C35: ["bordado", "bordados"],
+  C36: ["eventos", "fiestas"],
 };
 
-// Mapeo categoría (C01–C23) -> prefijos de codigo_act (SCIAN, 6 dígitos).
+// Mapeo categoría (C01–C36) -> prefijos de codigo_act (SCIAN, 6 dígitos).
 // La consulta convierte cada prefijo en un rango numérico: "7225" equivale
 // a codigo_act BETWEEN 722500 AND 722599, y "722514" a 722514 AND 722514.
 // Así el filtro usa el índice btree normal sobre codigo_act (entero); un
@@ -133,29 +178,43 @@ const CATEGORIAS_KEYWORDS: Record<string, string[]> = {
 // C21 queda vacío a propósito: "cadenas/franquicias" no es una actividad
 // SCIAN, así que esa categoría no filtra por código y solo busca por nombre.
 const CATEGORIA_CODIGOS_ACT: Record<string, string[]> = {
-  C01: ["461110"], // abarrotes, ultramarinos y misceláneas
+  C01: ["461110", "461140", "461150", "461160"], // abarrotes, ultramarinos y misceláneas; semillas y chiles secos; lácteos y embutidos; dulces y materias para repostería
   C02: ["462112"], // minisupers
   C03: ["462111", "462210", "431110"], // supermercados, departamentales, mayoreo de abarrotes
-  C04: ["722513", "722514"], // antojitos; tacos y tortas
+  C04: ["722513", "722514", "722519"], // antojitos; tacos y tortas; otros restaurantes para llevar
   C05: ["722517", "722519"], // pizzas/hamburguesas/hot dogs para llevar; otros para llevar
   C06: ["7225"], // TODOS los restaurantes con servicio de preparación de alimentos
   C07: ["722515"], // cafeterías, fuentes de sodas, neverías, refresquerías
   C08: ["3118"], // panaderías, tortillerías y molinos (rama 3118)
   C09: ["461121", "461122", "461123", "461130"], // carnes, aves, pescados/mariscos, frutas y verduras
-  C10: ["8111"], // reparación y mantenimiento de automóviles y camiones
-  C11: ["468211", "468212", "811192"], // refacciones nuevas/usadas; lavado y lubricado
+  C10: ["8111", "8112", "8114"], // reparación y mantenimiento de automóviles y camiones; reparación de aparatos eléctricos y electrónicos; reparación de otros artículos personales y del hogar
+  C11: ["468211", "468212", "811192", "811191"], // refacciones nuevas/usadas; lavado y lubricado; vulcanizadoras y llanteras
   C12: ["812110"], // salones y clínicas de belleza y peluquerías
   C13: ["621"], // consultorios y servicios médicos de consulta externa (incl. dentales 621211)
-  C14: ["463211", "463310", "466111"], // ropa; calzado; muebles para el hogar
+  C14: ["463211", "463310", "466111", "466410"], // ropa; calzado; muebles para el hogar; artículos usados (bazares)
   C15: ["611"], // servicios educativos
-  C16: ["4653"], // papelería, libros, regalos y novedades
-  C17: ["467111"], // ferreterías y tlapalerías
-  C18: ["464111", "464112"], // farmacias sin/con minisúper
+  C16: ["4653", "4659", "4651", "463113"], // papelería, libros, regalos y novedades; otros artículos de uso personal (regalos 465912, artesanías 465915); perfumería y cosméticos; mercerías
+  C17: ["467111", "467113", "467114", "467115"], // ferreterías y tlapalerías; pinturas; vidrios y aluminio; artículos de limpieza (jarcería)
+  C18: ["464111", "464112", "464121"], // farmacias sin/con minisúper; ópticas
   C19: ["72241"], // bares, cantinas y centros nocturnos
-  C20: ["713940"], // centros de acondicionamiento físico (gimnasios)
+  C20: ["71394"], // FASE 1.3 — BUG CORREGIDO: era "713940", que solo cubre el código exacto 713940 (subrama, no es clase real); "71394" cubre 713940–713949, incluidos los gimnasios 713943. Antes "gym" devolvía total 0.
   C21: [], // sin mapeo SCIAN (ver comentario arriba)
   C22: ["622"], // hospitales
   C23: ["623", "6244"], // residencias de asistencia social; guarderías
+  // FASE 1.3 — Categorías nuevas C24–C36.
+  C24: ["321910", "337120", "332320"], // carpintería (madera 321910, muebles 337120) y herrería (332320)
+  C25: ["813210"], // iglesias, capillas, templos y parroquias
+  C26: ["312112"], // agua purificada (purificadoras)
+  C27: ["461211", "461212", "461213"], // vinos y licores; cerveza (depósitos, Six, Modelorama); refrescos
+  C28: ["466312"], // florerías, viveros y plantas
+  C29: ["466212", "811219", "561432", "811211"], // venta y reparación de celulares; cibercafés e internet; reparación electrónica
+  C30: ["812210"], // lavanderías y tintorerías
+  C31: ["721111", "721112"], // hoteles
+  C32: ["541941", "465911"], // veterinarias; mascotas y artículos para mascotas
+  C33: ["812410"], // estacionamientos
+  C34: ["541110", "541211", "541120", "541920"], // bufetes jurídicos; contables; notarías; estudios fotográficos
+  C35: ["314991"], // bordados y confección textil
+  C36: ["531113"], // salones de fiestas y eventos
 };
 
 // MAPEO FINO (FASE 1.1, 2026-11-14): palabra genérica -> categoría C y
@@ -184,6 +243,23 @@ const PALABRAS_CODIGOS_ACT: Record<string, { cat: string; prefijos: string[] }> 
   arena: { cat: "C17", prefijos: ["467111", "434211"] },
   concreto: { cat: "C17", prefijos: ["467111", "434211"] },
   "materiales para construccion": { cat: "C17", prefijos: ["467111", "434211"] },
+  // FASE 1.3 — Vocabulario basado en datos (catálogo del vocabulario).
+  minisuper: { cat: "C02", prefijos: ["462112", "461110"] }, // los negocios llamados "minisuper" son mayormente 461110, pero el concepto y OXXO son 462112; van ambos
+  materiales: { cat: "C17", prefijos: ["467111", "434211"] }, // dominante 434211 mayoreo; misma solución que cemento
+  construccion: { cat: "C17", prefijos: ["467111", "434211"] },
+  cal: { cat: "C17", prefijos: ["467111", "434211"] }, // cal para construcción; antes caía a búsqueda por nombre 'cal%' (6,121 negocios de ruido)
+  pinturas: { cat: "C17", prefijos: ["467113"] }, // solo "pinturas" en plural; "pintura" en singular es ambigua y NO se toca
+  paleteria: { cat: "C07", prefijos: ["461170", "722515"] }, // paletas de hielo y helados (461170) + neverías (722515)
+  paleterias: { cat: "C07", prefijos: ["461170", "722515"] }, // plural, porque el difuso de "paleterias" no llegaría al fino
+  pasteleria: { cat: "C08", prefijos: ["311812", "461190"] }, // antes keyword de C07: devolvía 94,062 cafeterías, cero pastelerías
+  pastelerias: { cat: "C08", prefijos: ["311812", "461190"] },
+  pollos: { cat: "C05", prefijos: ["722517"] }, // el difuso lo llevaba a C09 por "pollo", pero su dominante es 722517 rostizados
+  // Robo de marca (verificado en la matriz contra las 21,609 marcas):
+  // "estacionamiento" y "electrico" existen como marca exacta y la marca
+  // ganaba a la keyword, así que van al mapeo fino (paso 0, antes que
+  // la marca). Las keywords se quedan en C33 y C10.
+  estacionamiento: { cat: "C33", prefijos: ["812410"] },
+  electrico: { cat: "C10", prefijos: ["8111", "8112", "8114"] },
 };
 
 function normalizar(txt: string): string {
